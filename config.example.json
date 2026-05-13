@@ -1,0 +1,12 @@
+{
+    "cookie": "YOUR_COOKIE_HERE",
+    "device_id": "YOUR_DEVICE_ID_HERE",
+    "web_id": "YOUR_WEB_ID_HERE",
+    "tea_uuid": "YOUR_TEA_UUID_HERE",
+    "room_id": "YOUR_ROOM_ID_HERE",
+    "fp": "YOUR_FP_HERE",
+    "api_base": "https://www.doubao.com",
+    "sign_method": "b3",
+    "server_host": "0.0.0.0",
+    "server_port": 8765
+}

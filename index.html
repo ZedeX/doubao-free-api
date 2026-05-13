@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doubao API 管理面板</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e1e4ed;--dim:#8b8fa3;--accent:#6c5ce7;--accent2:#a29bfe;--green:#00b894;--red:#e74c3c;--orange:#f39c12;--blue:#0984e3;--radius:10px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.header h1{font-size:20px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header-right{display:flex;align-items:center;gap:12px}
+.header-right label{font-size:13px;color:var(--dim)}
+.header-right input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;width:100px;font-size:13px;text-align:center}
+.header-right input:focus{outline:none;border-color:var(--accent)}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.status-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+.status-dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+.status-dot.warn{background:var(--orange);box-shadow:0 0 6px var(--orange)}
+
+.tabs{display:flex;background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;gap:0}
+.tab{padding:12px 20px;cursor:pointer;font-size:14px;color:var(--dim);border-bottom:2px solid transparent;transition:all .2s;user-select:none}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent2);border-bottom-color:var(--accent)}
+
+.main{padding:24px;max-width:1200px;margin:0 auto}
+.panel{display:none}
+.panel.active{display:block}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.card-title{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card-title .icon{font-size:18px}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:768px){.grid2,.grid3{grid-template-columns:1fr}}
+
+.stat{text-align:center;padding:16px}
+.stat-value{font-size:28px;font-weight:700;margin-bottom:4px}
+.stat-label{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+.stat-value.green{color:var(--green)}
+.stat-value.red{color:var(--red)}
+.stat-value.blue{color:var(--blue)}
+.stat-value.orange{color:var(--orange)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;color:var(--dim);font-weight:500;border-bottom:1px solid var(--border);font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+td{padding:10px 12px;border-bottom:1px solid var(--border)}
+tr:hover td{background:rgba(108,92,231,.05)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+.badge.green{background:rgba(0,184,148,.15);color:var(--green)}
+.badge.red{background:rgba(231,76,60,.15);color:var(--red)}
+.badge.orange{background:rgba(243,156,18,.15);color:var(--orange)}
+.badge.blue{background:rgba(9,132,227,.15);color:var(--blue)}
+.badge.purple{background:rgba(108,92,231,.15);color:var(--accent2)}
+
+.btn{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;transition:all .2s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2)}
+.btn-danger{background:rgba(231,76,60,.15);color:var(--red)}
+.btn-danger:hover{background:rgba(231,76,60,.25)}
+.btn-sm{padding:4px 10px;font-size:12px}
+
+.log-item{padding:14px 16px;border-bottom:1px solid var(--border);transition:background .2s}
+.log-item:hover{background:rgba(108,92,231,.05)}
+.log-item:last-child{border-bottom:none}
+.log-meta{display:flex;gap:12px;align-items:center;margin-bottom:6px;font-size:12px;color:var(--dim)}
+.log-user{background:rgba(9,132,227,.1);border-left:3px solid var(--blue);padding:8px 12px;border-radius:0 6px 6px 0;margin-bottom:6px;font-size:13px}
+.log-ai{background:rgba(0,184,148,.08);border-left:3px solid var(--green);padding:8px 12px;border-radius:0 6px 6px 0;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.log-empty{text-align:center;padding:40px;color:var(--dim);font-size:14px}
+
+.chat-box{display:flex;flex-direction:column;height:calc(100vh - 280px);min-height:400px}
+.chat-messages{flex:1;overflow-y:auto;padding:12px 0}
+.chat-input-area{display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
+.chat-input-area select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px}
+.chat-input-area textarea{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:13px;resize:none;font-family:inherit;min-height:42px;max-height:120px}
+.chat-input-area textarea:focus{outline:none;border-color:var(--accent)}
+.msg{margin-bottom:12px;max-width:85%}
+.msg-user{margin-left:auto}
+.msg-user .msg-bubble{background:rgba(108,92,231,.2);border-radius:12px 12px 2px 12px}
+.msg-ai .msg-bubble{background:var(--bg);border:1px solid var(--border);border-radius:12px 12px 12px 2px}
+.msg-bubble{padding:10px 14px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+.msg-role{font-size:11px;color:var(--dim);margin-bottom:3px;padding:0 4px}
+.msg-user .msg-role{text-align:right}
+.typing::after{content:'●●●';animation:blink 1.2s infinite;letter-spacing:2px;color:var(--accent2)}
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+
+.config-row{display:flex;align-items:center;margin-bottom:12px;gap:12px}
+.config-row label{width:120px;font-size:13px;color:var(--dim);flex-shrink:0}
+.config-row input,.config-row select{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px}
+.config-row input:focus,.config-row select:focus{outline:none;border-color:var(--accent)}
+.config-row input:read-only{opacity:.6;cursor:not-allowed}
+
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:13px;z-index:9999;animation:slideIn .3s ease;max-width:400px}
+.toast.success{background:rgba(0,184,148,.9);color:#fff}
+.toast.error{background:rgba(231,76,60,.9);color:#fff}
+.toast.info{background:rgba(9,132,227,.9);color:#fff}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+.log-filters{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.log-filters input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px}
+.log-filters input:focus{outline:none;border-color:var(--accent)}
+.log-filters select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px}
+
+.pagination{display:flex;justify-content:center;gap:8px;margin-top:16px}
+.pagination button{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+.pagination button:hover{border-color:var(--accent)}
+.pagination button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.pagination button:disabled{opacity:.4;cursor:not-allowed}
+
+.account-form{display:none;margin-top:14px;padding:14px;background:var(--bg);border-radius:8px;border:1px solid var(--border)}
+.account-form.show{display:block}
+.account-form .config-row{margin-bottom:10px}
+.account-form .config-row label{width:90px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🫘 Doubao API 管理面板</h1>
+  <div class="header-right">
+    <label>API 端口</label>
+    <input type="number" id="apiPort" value="8765" min="1" max="65535">
+    <span class="status-dot" id="statusDot"></span>
+    <span id="statusText" style="font-size:13px;color:var(--dim)">检测中...</span>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="status">📊 状态</div>
+  <div class="tab" data-tab="chat">💬 对话</div>
+  <div class="tab" data-tab="logs">📋 日志</div>
+  <div class="tab" data-tab="accounts">👤 账号</div>
+  <div class="tab" data-tab="config">⚙️ 配置</div>
+</div>
+
+<div class="main">
+
+<div class="panel active" id="panel-status">
+  <div class="grid3" id="statsGrid">
+    <div class="card stat"><div class="stat-value green" id="statStatus">--</div><div class="stat-label">服务状态</div></div>
+    <div class="card stat"><div class="stat-value blue" id="statAccounts">--</div><div class="stat-label">活跃账号</div></div>
+    <div class="card stat"><div class="stat-value orange" id="statMethod">--</div><div class="stat-label">签名方式</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">📡</span> 账号详情</div>
+    <table>
+      <thead><tr><th>名称</th><th>状态</th><th>失败次数</th><th>Cookie长度</th><th>最近失败</th></tr></thead>
+      <tbody id="accountsTable"></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">🔗</span> 可用模型</div>
+    <div id="modelsList" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+  </div>
+</div>
+
+<div class="panel" id="panel-chat">
+  <div class="card chat-box">
+    <div class="chat-messages" id="chatMessages">
+      <div style="text-align:center;padding:40px;color:var(--dim)">
+        选择模型，输入消息开始对话<br><small>对话通过 /v1/chat/completions 接口进行</small>
+      </div>
+    </div>
+    <div class="chat-input-area">
+      <select id="chatModel">
+        <option value="doubao-pro-chat">doubao-pro-chat (快速)</option>
+        <option value="doubao-thinking">doubao-thinking (思考)</option>
+        <option value="doubao-expert">doubao-expert (超能)</option>
+        <option value="doubao-coding">doubao-coding (编程)</option>
+        <option value="doubao-writing">doubao-writing (写作)</option>
+        <option value="doubao-translator">doubao-translator (翻译)</option>
+        <option value="doubao-tutor">doubao-tutor (解题)</option>
+        <option value="doubao-lite-chat">doubao-lite-chat (轻量)</option>
+        <option value="doubao-pro-32k">doubao-pro-32k</option>
+        <option value="doubao-pro-128k">doubao-pro-128k</option>
+      </select>
+      <input type="file" id="chatImage" accept="image/*" style="display:none">
+      <button class="btn btn-primary" onclick="$('#chatImage').click()" title="上传图片" style="font-size:16px;padding:8px 12px">🖼️</button>
+      <textarea id="chatInput" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
+      <button class="btn btn-primary" id="chatSend" onclick="sendChat()">发送</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel-logs">
+  <div class="card">
+    <div class="card-title"><span class="icon">📋</span> 对话日志</div>
+    <div class="log-filters">
+      <input type="date" id="logDate">
+      <input type="text" id="logSearch" placeholder="搜索关键词...">
+      <select id="logModel">
+        <option value="">全部模型</option>
+        <option value="doubao-pro-chat">doubao-pro-chat</option>
+        <option value="doubao-thinking">doubao-thinking</option>
+        <option value="doubao-expert">doubao-expert</option>
+        <option value="doubao-coding">doubao-coding</option>
+        <option value="doubao-writing">doubao-writing</option>
+        <option value="doubao-translator">doubao-translator</option>
+        <option value="doubao-tutor">doubao-tutor</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="loadLogs()">刷新</button>
+    </div>
+    <div id="logsList"></div>
+    <div class="pagination" id="logPagination"></div>
+  </div>
+</div>
+
+<div class="panel" id="panel-accounts">
+  <div class="card">
+    <div class="card-title"><span class="icon">👤</span> Cookie 账号池</div>
+    <table>
+      <thead><tr><th>名称</th><th>状态</th><th>失败次数</th><th>Cookie长度</th><th>最近失败</th><th>操作</th></tr></thead>
+      <tbody id="accountsManageTable"></tbody>
+    </table>
+    <button class="btn btn-primary" style="margin-top:14px" onclick="toggleAddAccount()">+ 添加账号</button>
+    <div class="account-form" id="addAccountForm">
+      <div class="config-row"><label>名称</label><input type="text" id="accName" placeholder="如: account2"></div>
+      <div class="config-row"><label>Cookie</label><input type="text" id="accCookie" placeholder="完整Cookie字符串"></div>
+      <div class="config-row"><label>device_id</label><input type="text" id="accDeviceId" placeholder="可选，留空使用默认"></div>
+      <div class="config-row"><label>web_id</label><input type="text" id="accWebId" placeholder="可选，留空使用默认"></div>
+      <div class="config-row"><label>tea_uuid</label><input type="text" id="accTeaUuid" placeholder="可选，留空使用默认"></div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-primary" onclick="addAccount()">确认添加</button>
+        <button class="btn btn-danger" onclick="toggleAddAccount()">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel-config">
+  <div class="card">
+    <div class="card-title"><span class="icon">⚙️</span> 服务配置（只读，修改请编辑 config.json 后重启服务）</div>
+    <div id="configDisplay"></div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">🔑</span> 快速提取 Cookie</div>
+    <p style="font-size:13px;color:var(--dim);margin-bottom:12px">运行以下命令自动提取并更新 config.json：</p>
+    <code style="display:block;background:var(--bg);padding:12px;border-radius:6px;font-size:13px;color:var(--accent2)">python doubao-api/temp/extract_session.py</code>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">📖</span> API 使用说明</div>
+    <div style="font-size:13px;line-height:1.8;color:var(--dim)">
+      <p><strong style="color:var(--text)">基础地址</strong>：<code id="apiBaseUrl">http://localhost:8765/v1</code></p>
+      <p><strong style="color:var(--text)">对话接口</strong>：<code>POST /v1/chat/completions</code></p>
+      <p><strong style="color:var(--text)">模型列表</strong>：<code>GET /v1/models</code></p>
+      <p><strong style="color:var(--text)">图片上传</strong>：<code>POST /v1/images/upload</code></p>
+      <p><strong style="color:var(--text)">健康检查</strong>：<code>GET /health</code></p>
+      <p><strong style="color:var(--text)">今日日志</strong>：<code>GET /logs/today</code></p>
+      <p><strong style="color:var(--text)">账号列表</strong>：<code>GET /accounts</code></p>
+      <p style="margin-top:8px"><strong style="color:var(--text)">Vision 图片识别</strong>：</p>
+      <code style="display:block;background:var(--bg);padding:8px;border-radius:4px;margin-top:4px;white-space:pre-wrap;font-size:12px">messages: [{
+  role: "user",
+  content: [
+    { type: "text", text: "描述图片" },
+    { type: "image_url", image_url: { url: "https://..." } }
+  ]
+}]</code>
+      <p style="margin-top:8px"><strong style="color:var(--text)">支持 base64</strong>：<code>url: "data:image/png;base64,..."</code></p>
+      <p style="margin-top:8px"><strong style="color:var(--text)">特殊模式模型</strong>：</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
+        <span class="badge purple">doubao-thinking 思考</span>
+        <span class="badge purple">doubao-expert 超能</span>
+        <span class="badge blue">doubao-coding 编程</span>
+        <span class="badge blue">doubao-writing 写作</span>
+        <span class="badge blue">doubao-translator 翻译</span>
+        <span class="badge blue">doubao-tutor 解题</span>
+      </div>
+      <p style="margin-top:8px"><strong style="color:var(--text)">Claude Code 对接</strong>：</p>
+      <code style="display:block;background:var(--bg);padding:8px;border-radius:4px;margin-top:4px">OPENAI_API_BASE=http://localhost:8765/v1 OPENAI_API_KEY=sk-doubao claude</code>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+let API_BASE = '';
+let allLogs = [];
+let logPage = 1;
+const LOG_PER_PAGE = 20;
+let chatConversationId = '';
+let isStreaming = false;
+let pendingImageBase64 = null;
+let pendingImageName = '';
+
+$('#chatImage').addEventListener('change', async function() {
+  const file = this.files[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('请选择图片文件', 'error'); return; }
+  if (file.size > 10 * 1024 * 1024) { toast('图片不能超过10MB', 'error'); return; }
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    pendingImageBase64 = e.target.result;
+    pendingImageName = file.name;
+    toast(`图片已选择: ${file.name}，发送时将自动上传`, 'success');
+    const preview = document.createElement('div');
+    preview.id = 'imagePreview';
+    preview.style.cssText = 'position:relative;display:inline-block;margin:4px 0';
+    preview.innerHTML = `<img src="${pendingImageBase64}" style="max-width:80px;max-height:60px;border-radius:4px;border:1px solid var(--border)"><button onclick="clearPendingImage()" style="position:absolute;top:-6px;right:-6px;background:var(--red);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:10px;cursor:pointer;line-height:18px">×</button>`;
+    const existing = $('#imagePreview');
+    if (existing) existing.remove();
+    document.querySelector('.chat-input-area').insertBefore(preview, $('#chatInput'));
+  };
+  reader.readAsDataURL(file);
+  this.value = '';
+});
+
+function clearPendingImage() {
+  pendingImageBase64 = null;
+  pendingImageName = '';
+  const preview = $('#imagePreview');
+  if (preview) preview.remove();
+}
+
+function getApiUrl(path) {
+  const port = $('#apiPort').value || '8765';
+  return `http://localhost:${port}${path}`;
+}
+
+async function api(path, opts = {}) {
+  try {
+    const url = getApiUrl(path);
+    const res = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...opts.headers } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    throw e;
+  }
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function timeAgo(iso) {
+  if (!iso) return '-';
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 60000) return Math.floor(diff / 1000) + '秒前';
+  if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+  return Math.floor(diff / 86400000) + '天前';
+}
+
+async function checkHealth() {
+  const dot = $('#statusDot');
+  const txt = $('#statusText');
+  try {
+    const data = await api('/health');
+    dot.className = 'status-dot ' + (data.status === 'ok' ? 'ok' : 'warn');
+    txt.textContent = data.status === 'ok' ? '正常' : '降级';
+    txt.style.color = data.status === 'ok' ? 'var(--green)' : 'var(--orange)';
+    return data;
+  } catch {
+    dot.className = 'status-dot err';
+    txt.textContent = '离线';
+    txt.style.color = 'var(--red)';
+    return null;
+  }
+}
+
+async function loadStatus() {
+  const health = await checkHealth();
+  if (!health) {
+    $('#statStatus').textContent = '离线';
+    $('#statStatus').className = 'stat-value red';
+    $('#statAccounts').textContent = '0';
+    $('#statMethod').textContent = '-';
+    $('#accountsTable').innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--dim)">服务离线</td></tr>';
+    return;
+  }
+  $('#statStatus').textContent = health.status === 'ok' ? '正常' : '降级';
+  $('#statStatus').className = 'stat-value ' + (health.status === 'ok' ? 'green' : 'orange');
+  $('#statAccounts').textContent = `${health.accounts_active}/${health.accounts_total}`;
+  $('#statMethod').textContent = health.sign_method?.toUpperCase();
+
+  let html = '';
+  for (const a of health.accounts || []) {
+    const badge = a.enabled ? '<span class="badge green">启用</span>' : '<span class="badge red">禁用</span>';
+    html += `<tr><td>${a.name}</td><td>${badge}</td><td>${a.fail_count}</td><td>${a.cookie_length}</td><td>${timeAgo(a.last_fail)}</td></tr>`;
+  }
+  $('#accountsTable').innerHTML = html || '<tr><td colspan="5" style="text-align:center;color:var(--dim)">暂无账号</td></tr>';
+
+  try {
+    const models = await api('/v1/models');
+    let mhtml = '';
+    for (const m of models.data || []) {
+      mhtml += `<span class="badge purple">${m.id}</span>`;
+    }
+    $('#modelsList').innerHTML = mhtml;
+  } catch {}
+}
+
+async function loadLogs() {
+  const dateVal = $('#logDate').value;
+  const search = $('#logSearch').value.toLowerCase();
+  const modelFilter = $('#logModel').value;
+
+  let data;
+  try {
+    if (dateVal) {
+      const dateStr = dateVal.replace(/-/g, '');
+      data = await api(`/logs/${dateStr}`);
+    } else {
+      data = await api('/logs/today');
+    }
+  } catch {
+    data = { count: 0, logs: [] };
+  }
+
+  allLogs = (data.logs || []).filter(l => {
+    if (search && !l.user_input?.toLowerCase().includes(search) && !l.ai_output?.toLowerCase().includes(search)) return false;
+    if (modelFilter && l.model !== modelFilter) return false;
+    return true;
+  }).reverse();
+
+  logPage = 1;
+  renderLogs();
+}
+
+function renderLogs() {
+  const total = allLogs.length;
+  const totalPages = Math.max(1, Math.ceil(total / LOG_PER_PAGE));
+  if (logPage > totalPages) logPage = totalPages;
+  const start = (logPage - 1) * LOG_PER_PAGE;
+  const page = allLogs.slice(start, start + LOG_PER_PAGE);
+
+  if (total === 0) {
+    $('#logsList').innerHTML = '<div class="log-empty">暂无日志记录</div>';
+    $('#logPagination').innerHTML = '';
+    return;
+  }
+
+  let html = '';
+  for (const l of page) {
+    html += `<div class="log-item">
+      <div class="log-meta">
+        <span class="badge blue">${l.model || '-'}</span>
+        <span>🕐 ${l.time || '-'}</span>
+        <span>💬 ${l.conversation_id?.slice(-8) || '-'}</span>
+        <span>📏 ${l.output_length || 0}字</span>
+      </div>
+      <div class="log-user">👤 ${escHtml(l.user_input || '')}</div>
+      <div class="log-ai">🤖 ${escHtml(l.ai_output || '')}</div>
+    </div>`;
+  }
+  $('#logsList').innerHTML = html;
+
+  let phtml = '';
+  phtml += `<button ${logPage <= 1 ? 'disabled' : ''} onclick="logPage--;renderLogs()">上一页</button>`;
+  const maxShow = 5;
+  let ps = Math.max(1, logPage - Math.floor(maxShow / 2));
+  let pe = Math.min(totalPages, ps + maxShow - 1);
+  ps = Math.max(1, pe - maxShow + 1);
+  for (let i = ps; i <= pe; i++) {
+    phtml += `<button class="${i === logPage ? 'active' : ''}" onclick="logPage=${i};renderLogs()">${i}</button>`;
+  }
+  phtml += `<button ${logPage >= totalPages ? 'disabled' : ''} onclick="logPage++;renderLogs()">下一页</button>`;
+  phtml += `<span style="font-size:12px;color:var(--dim);margin-left:8px">共 ${total} 条</span>`;
+  $('#logPagination').innerHTML = phtml;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function loadAccounts() {
+  try {
+    const data = await api('/accounts');
+    let html = '';
+    for (const a of data.accounts || []) {
+      const badge = a.enabled ? '<span class="badge green">启用</span>' : '<span class="badge red">禁用</span>';
+      const del = a.name !== 'primary' ? `<button class="btn btn-danger btn-sm" onclick="removeAccount('${a.name}')">删除</button>` : '';
+      html += `<tr><td>${a.name}</td><td>${badge}</td><td>${a.fail_count}</td><td>${a.cookie_length}</td><td>${timeAgo(a.last_fail)}</td><td>${del}</td></tr>`;
+    }
+    $('#accountsManageTable').innerHTML = html || '<tr><td colspan="6" style="text-align:center;color:var(--dim)">暂无账号</td></tr>';
+  } catch {
+    $('#accountsManageTable').innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">服务离线</td></tr>';
+  }
+}
+
+async function addAccount() {
+  const name = $('#accName').value.trim();
+  const cookie = $('#accCookie').value.trim();
+  if (!name || !cookie) { toast('名称和Cookie不能为空', 'error'); return; }
+  try {
+    await api('/accounts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        cookie,
+        device_id: $('#accDeviceId').value.trim(),
+        web_id: $('#accWebId').value.trim(),
+        tea_uuid: $('#accTeaUuid').value.trim()
+      })
+    });
+    toast('账号添加成功', 'success');
+    toggleAddAccount();
+    loadAccounts();
+    loadStatus();
+  } catch (e) {
+    toast('添加失败: ' + e.message, 'error');
+  }
+}
+
+async function removeAccount(name) {
+  if (!confirm(`确定删除账号 "${name}"？`)) return;
+  try {
+    await api(`/accounts/${name}`, { method: 'DELETE' });
+    toast('账号已删除', 'success');
+    loadAccounts();
+    loadStatus();
+  } catch (e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
+}
+
+function toggleAddAccount() {
+  const f = $('#addAccountForm');
+  f.classList.toggle('show');
+  if (!f.classList.contains('show')) {
+    $('#accName').value = '';
+    $('#accCookie').value = '';
+    $('#accDeviceId').value = '';
+    $('#accWebId').value = '';
+    $('#accTeaUuid').value = '';
+  }
+}
+
+async function loadConfig() {
+  try {
+    const health = await api('/health');
+    const port = $('#apiPort').value || '8765';
+    let html = '';
+    const fields = [
+      ['签名方式', health.sign_method?.toUpperCase()],
+      ['活跃账号', `${health.accounts_active}/${health.accounts_total}`],
+      ['API基础地址', `http://localhost:${port}`],
+      ['服务端口', port],
+    ];
+    if (health.signer_initialized !== undefined) {
+      fields.push(['签名器初始化', health.signer_initialized ? '✅ 是' : '❌ 否']);
+    }
+    if (health.ms_token_available !== undefined) {
+      fields.push(['msToken可用', health.ms_token_available ? '✅ 是' : '❌ 否']);
+    }
+    for (const [label, value] of fields) {
+      html += `<div class="config-row"><label>${label}</label><input type="text" value="${value}" readonly></div>`;
+    }
+    $('#configDisplay').innerHTML = html;
+    $('#apiBaseUrl').textContent = `http://localhost:${port}/v1`;
+  } catch {
+    $('#configDisplay').innerHTML = '<p style="color:var(--red)">服务离线，无法获取配置</p>';
+  }
+}
+
+async function sendChat() {
+  const input = $('#chatInput');
+  const msg = input.value.trim();
+  if ((!msg && !pendingImageBase64) || isStreaming) return;
+
+  const model = $('#chatModel').value;
+  const messagesDiv = $('#chatMessages');
+
+  if (messagesDiv.querySelector('[style]') && !messagesDiv.querySelector('.msg')) {
+    messagesDiv.innerHTML = '';
+  }
+
+  let content;
+  if (pendingImageBase64) {
+    content = [
+      { type: "text", text: msg || "请描述这张图片" },
+      { type: "image_url", image_url: { url: pendingImageBase64 } }
+    ];
+  } else {
+    content = msg;
+  }
+
+  const userDiv = document.createElement('div');
+  userDiv.className = 'msg msg-user';
+  let userHtml = '<div class="msg-role">你</div><div class="msg-bubble">';
+  if (pendingImageBase64) {
+    userHtml += `<img src="${pendingImageBase64}" style="max-width:200px;max-height:150px;border-radius:4px;margin-bottom:4px;display:block">`;
+  }
+  userHtml += escHtml(msg || '(图片)') + '</div>';
+  userDiv.innerHTML = userHtml;
+  messagesDiv.appendChild(userDiv);
+
+  const aiDiv = document.createElement('div');
+  aiDiv.className = 'msg msg-ai';
+  aiDiv.innerHTML = `<div class="msg-role">豆包 (${model})</div><div class="msg-bubble typing"></div>`;
+  messagesDiv.appendChild(aiDiv);
+  const aiBubble = aiDiv.querySelector('.msg-bubble');
+
+  input.value = '';
+  input.style.height = 'auto';
+  clearPendingImage();
+  isStreaming = true;
+  $('#chatSend').disabled = true;
+
+  try {
+    const url = getApiUrl('/v1/chat/completions');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content }],
+        stream: true
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta?.content;
+          if (delta) {
+            fullText += delta;
+            aiBubble.innerHTML = renderMarkdown(fullText);
+            aiBubble.classList.remove('typing');
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+          }
+        } catch {}
+      }
+    }
+
+    if (!fullText) {
+      aiBubble.textContent = '(空回复)';
+      aiBubble.classList.remove('typing');
+    }
+  } catch (e) {
+    aiBubble.textContent = '❌ 请求失败: ' + e.message;
+    aiBubble.classList.remove('typing');
+  }
+
+  isStreaming = false;
+  $('#chatSend').disabled = false;
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function renderMarkdown(text) {
+  let html = escHtml(text);
+  html = html.replace(/!\[image\]\(([^)]+)\)/g, '<img src="$1" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;display:block">');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/`([^`]+)`/g, '<code style="background:var(--bg);padding:1px 4px;border-radius:3px;font-size:12px">$1</code>');
+  return html;
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    $$('.tab').forEach(t => t.classList.remove('active'));
+    $$('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    $(`#panel-${tab.dataset.tab}`).classList.add('active');
+    const t = tab.dataset.tab;
+    if (t === 'status') loadStatus();
+    if (t === 'logs') loadLogs();
+    if (t === 'accounts') loadAccounts();
+    if (t === 'config') loadConfig();
+  });
+});
+
+$('#apiPort').addEventListener('change', () => {
+  loadStatus();
+  localStorage.setItem('apiPort', $('#apiPort').value);
+});
+
+$('#chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChat();
+  }
+});
+
+$('#chatInput').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+$('#logDate').addEventListener('change', loadLogs);
+$('#logSearch').addEventListener('input', () => { logPage = 1; renderLogs(); });
+$('#logModel').addEventListener('change', () => { logPage = 1; renderLogs(); });
+
+const savedPort = localStorage.getItem('apiPort');
+if (savedPort) $('#apiPort').value = savedPort;
+
+const today = new Date().toISOString().split('T')[0];
+$('#logDate').value = today;
+
+loadStatus();
+</script>
+</body>
+</html>
