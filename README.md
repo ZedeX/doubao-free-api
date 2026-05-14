@@ -5,6 +5,7 @@
 ## ✨ 功能特性
 
 - 🔄 **OpenAI 兼容** — 完全兼容 `/v1/chat/completions` 接口，支持流式/非流式
+- 🤖 **Anthropic 兼容** — 完全兼容 `/v1/messages` 接口，支持 Claude Code 原生对接
 - 🖼️ **Vision 图片识别** — 支持 OpenAI Vision 格式，自动上传图片到豆包 ImageX
 - 🧠 **思考模式** — 深度推理，边想边搜
 - 💻 **编程模式** — 基于 Doubao-Seed-Code 的代码生成
@@ -61,7 +62,15 @@ curl -X POST http://localhost:8765/v1/chat/completions \
 
 ## 对接 AI Agent
 
-### Claude Code
+### Claude Code (Anthropic 原生模式)
+
+```bash
+ANTHROPIC_API_KEY=any-string ANTHROPIC_BASE_URL=http://localhost:8765 claude
+```
+
+Claude Code 使用 Anthropic Messages API (`/v1/messages`)，本服务已完整兼容，包括流式 SSE 事件格式。
+
+### Claude Code (OpenAI 兼容模式)
 
 ```bash
 OPENAI_API_BASE=http://localhost:8765/v1 OPENAI_API_KEY=sk-doubao claude
@@ -164,11 +173,81 @@ response = client.chat.completions.create(
 - **HTTP URL**：`https://...` — 自动下载并上传
 - **Base64 Data URL**：`data:image/png;base64,...` — 自动解码并上传
 
+## Anthropic Claude Code 兼容
+
+本服务完整实现了 Anthropic Messages API (`/v1/messages`)，Claude Code 可直接使用：
+
+### 模型映射
+
+| Claude 模型 | 豆包模型 |
+|---|---|
+| `claude-3-5-sonnet-latest` | doubao-pro-chat |
+| `claude-3-5-haiku-latest` | doubao-lite-chat |
+| `claude-3-opus-latest` | doubao-expert |
+| `claude-sonnet-4-*` | doubao-pro-chat |
+
+### 启动 Claude Code
+
+```bash
+ANTHROPIC_API_KEY=any-string ANTHROPIC_BASE_URL=http://localhost:8765 claude
+```
+
+### 直接调用
+
+```bash
+curl -X POST http://localhost:8765/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: any-string" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-3-5-sonnet-latest",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "你好"}],
+    "stream": true
+  }'
+```
+
+### Python SDK
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(api_key="any-string", base_url="http://localhost:8765")
+
+# 非流式
+message = client.messages.create(
+    model="claude-3-5-sonnet-latest",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "你好"}]
+)
+print(message.content[0].text)
+
+# 流式
+with client.messages.stream(
+    model="claude-3-5-sonnet-latest",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "你好"}]
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+### 支持的 Anthropic 特性
+
+- ✅ 流式 SSE（message_start, content_block_start, content_block_delta, message_delta, message_stop）
+- ✅ 非流式响应
+- ✅ system 提示词（字符串和 content blocks 格式）
+- ✅ Vision 图片识别（base64 和 URL）
+- ✅ 多轮对话
+- ✅ stop_reason（end_turn）
+- ✅ usage 统计
+
 ## API 端点
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/v1/chat/completions` | POST | 对话补全（流式/非流式） |
+| `/v1/chat/completions` | POST | OpenAI 对话补全（流式/非流式） |
+| `/v1/messages` | POST | Anthropic Messages API（流式/非流式） |
 | `/v1/models` | GET | 模型列表（含能力描述） |
 | `/v1/images/upload` | POST | 上传图片文件 |
 | `/health` | GET | 健康检查 + 功能状态 |
@@ -192,12 +271,19 @@ response = client.chat.completions.create(
 
 ```
 doubao-api/
-├── main.py              # FastAPI 主服务 (V3.0)
+├── main.py              # FastAPI 入口 + 路由
+├── config.py            # 配置加载 + Cookie池 + 日志
+├── models.py            # 数据模型 + 模型配置
+├── sse.py               # SSE 解析 + 格式化工具
+├── openai_api.py        # OpenAI 兼容 API 逻辑
+├── anthropic_api.py     # Anthropic 兼容 API 逻辑
 ├── uploader.py          # 图片上传模块 (ImageX 4步流程)
 ├── signer.py            # Playwright 签名模块 (B2, 实验性)
 ├── config.json          # 会话配置 (自动生成)
 ├── config.example.json  # 配置示例
 ├── index.html           # 管理面板
+├── docs/                # 文档
+│   └── reverse-engineering-report.md  # 逆向分析报告
 ├── logs/                # 对话日志 (自动生成)
 ├── conversations/       # 会话状态 (自动生成)
 └── temp/                # 临时文件
