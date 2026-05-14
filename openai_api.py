@@ -7,13 +7,13 @@ from typing import AsyncGenerator, Union
 import aiohttp
 from urllib.parse import urlencode
 
-from config import CONFIG, SIGN_METHOD, signer, cookie_pool
+from config import CONFIG, SIGN_METHOD, signer, cookie_pool, USER_AGENT
 from models import ChatMessage, MODEL_CONFIG
 from sse import (
     build_url_params, build_headers, build_request_body,
     extract_text_from_content, extract_image_urls_from_content,
     parse_sse_line, extract_text_from_event, extract_image_urls_from_event,
-    extract_conversation_id, is_cookie_expired,
+    extract_conversation_id,
     format_openai_chunk, format_openai_done
 )
 from config import save_conversation_log, save_conversation_state
@@ -90,8 +90,9 @@ async def call_doubao_api(messages: list[ChatMessage], conversation_id: str = "0
                         body_text = await resp.text()
                         logger.error(f"Doubao API returned {resp.status}: {body_text[:200]}")
 
-                        if is_cookie_expired(resp.status, body_text):
-                            cookie_pool.report_fail(account)
+                        if cookie_pool.is_cookie_expired(body_text, resp.status):
+                            cookie_pool.report_fail(account, reason="cookie_expired")
+                            cookie_pool.maybe_refresh()
                             if attempt < max_retries:
                                 account = cookie_pool.get_next()
                                 headers = build_headers(account)
@@ -106,9 +107,28 @@ async def call_doubao_api(messages: list[ChatMessage], conversation_id: str = "0
 
                     cookie_pool.report_success(account)
 
+                    collected_chunks = []
                     async for chunk in resp.content.iter_any():
-                        yield chunk
-                    return
+                        collected_chunks.append(chunk)
+                        chunk_text = chunk.decode('utf-8', errors='replace')
+                        if cookie_pool.is_cookie_expired(chunk_text, 200):
+                            logger.warning(f"Cookie expired detected in SSE stream, aborting and retrying")
+                            cookie_pool.report_fail(account, reason="cookie_expired_in_stream")
+                            cookie_pool.maybe_refresh()
+                            if attempt < max_retries:
+                                account = cookie_pool.get_next()
+                                headers = build_headers(account)
+                                break
+                            for c in collected_chunks:
+                                yield c
+                            return
+                    else:
+                        for c in collected_chunks:
+                            yield c
+                        return
+                    for c in collected_chunks:
+                        yield c
+                    continue
         except asyncio.TimeoutError:
             logger.error(f"Doubao API timeout (attempt {attempt + 1})")
             if attempt < max_retries:
@@ -134,6 +154,21 @@ async def stream_chat_completion(request):
     conversation_id = request.conversation_id or "0"
     user_input = extract_text_from_content(request.messages[-1].content) if request.messages else ""
     buffer = ""
+    full_thinking = ""
+
+    model_cfg = MODEL_CONFIG.get(request.model, {})
+    is_image_model = model_cfg.get("is_image_model", False)
+    is_podcast_model = model_cfg.get("is_podcast_model", False)
+
+    if is_image_model:
+        async for chunk in _stream_image_generation(user_input, request.model, chat_id):
+            yield chunk
+        return
+
+    if is_podcast_model:
+        async for chunk in _stream_podcast_generation(user_input, request.model, chat_id):
+            yield chunk
+        return
 
     last_msg = request.messages[-1] if request.messages else None
     image_urls = extract_image_urls_from_content(last_msg.content) if last_msg and isinstance(last_msg.content, list) else []
@@ -168,7 +203,10 @@ async def stream_chat_completion(request):
                     yield format_openai_done()
                     return
 
-                extracted = extract_text_from_event(event_data)
+                extracted, thinking = extract_text_from_event(event_data)
+                if thinking:
+                    full_thinking += thinking
+                    yield format_openai_chunk("", request.model, chat_id, conversation_id, reasoning_content=thinking)
                 if extracted:
                     full_text += extracted
                     yield format_openai_chunk(extracted, request.model, chat_id, conversation_id)
@@ -200,7 +238,10 @@ async def stream_chat_completion(request):
         line = buffer.strip()
         event_data = parse_sse_line(line)
         if event_data is not None:
-            extracted = extract_text_from_event(event_data)
+            extracted, thinking = extract_text_from_event(event_data)
+            if thinking:
+                full_thinking += thinking
+                yield format_openai_chunk("", request.model, chat_id, conversation_id, reasoning_content=thinking)
             if extracted:
                 full_text += extracted
                 yield format_openai_chunk(extracted, request.model, chat_id, conversation_id)
@@ -221,6 +262,69 @@ async def non_stream_chat_completion(request):
     conversation_id = request.conversation_id or "0"
     user_input = extract_text_from_content(request.messages[-1].content) if request.messages else ""
     buffer = ""
+    full_thinking = ""
+
+    model_cfg = MODEL_CONFIG.get(request.model, {})
+    is_image_model = model_cfg.get("is_image_model", False)
+    is_podcast_model = model_cfg.get("is_podcast_model", False)
+
+    if is_image_model:
+        result = await generate_images(user_input)
+        img_text = ""
+        for img in result.get("data", []):
+            url = img.get("url", "")
+            error = img.get("error", "")
+            if url:
+                img_text += f"\n![image]({url})\n"
+            elif error:
+                img_text = f"⚠️ {error}"
+        if not img_text:
+            img_text = "图片生成失败，请稍后再试。"
+        import time as _time
+        return {
+            "id": chat_id,
+            "object": "chat.completion",
+            "created": int(_time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": img_text},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
+
+    if is_podcast_model:
+        from podcast import start_podcast_generation, get_podcast_status
+        import time as _time
+        pod_result = await start_podcast_generation(user_input, conversation_id)
+        task_id = pod_result["task_id"]
+        for _ in range(60):
+            await asyncio.sleep(3)
+            status = await get_podcast_status(task_id)
+            if status["status"] in ("completed", "script_ready", "failed"):
+                break
+        pod_text = ""
+        if status.get("audio_url"):
+            pod_text = f"🎙️ AI播客已生成！\n\n标题：{status.get('title', user_input)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听播客]({status['audio_url']})"
+        elif status.get("script_length", 0) > 0:
+            from podcast import get_podcast_script
+            script = await get_podcast_script(task_id)
+            pod_text = f"🎙️ AI播客脚本已生成（音频需在豆包客户端生成）\n\n{script.get('script', '')}"
+        else:
+            pod_text = f"播客生成失败: {status.get('error', '未知错误')}"
+        return {
+            "id": chat_id,
+            "object": "chat.completion",
+            "created": int(_time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": pod_text},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
 
     last_msg = request.messages[-1] if request.messages else None
     image_urls = extract_image_urls_from_content(last_msg.content) if last_msg and isinstance(last_msg.content, list) else []
@@ -248,7 +352,9 @@ async def non_stream_chat_completion(request):
             if event_data is None:
                 break
 
-            extracted = extract_text_from_event(event_data)
+            extracted, thinking = extract_text_from_event(event_data)
+            if thinking:
+                full_thinking += thinking
             if extracted:
                 full_text += extracted
 
@@ -286,10 +392,58 @@ async def non_stream_chat_completion(request):
         }
     }
 
+    if full_thinking:
+        result["choices"][0]["message"]["reasoning_content"] = full_thinking
+
     if all_image_urls:
         result["images"] = all_image_urls
 
     return result
+
+
+async def _stream_image_generation(prompt: str, model: str, chat_id: str):
+    yield format_openai_chunk("🎨 正在生成图片...\n", model, chat_id)
+    try:
+        result = await generate_images(prompt)
+        for img in result.get("data", []):
+            if img.get("url"):
+                img_markdown = f"\n![image]({img['url']})\n"
+                yield format_openai_chunk(img_markdown, model, chat_id)
+        if not any(img.get("url") for img in result.get("data", [])):
+            yield format_openai_chunk("图片生成失败，请稍后再试。\n", model, chat_id)
+    except Exception as e:
+        yield format_openai_chunk(f"图片生成错误: {str(e)}\n", model, chat_id)
+    yield format_openai_chunk("", model, chat_id).replace('"finish_reason": null', '"finish_reason": "stop"')
+    yield format_openai_done()
+
+
+async def _stream_podcast_generation(topic: str, model: str, chat_id: str):
+    from podcast import start_podcast_generation, get_podcast_status, get_podcast_script
+    yield format_openai_chunk("🎙️ 正在生成AI播客，请稍候...\n", model, chat_id)
+    try:
+        pod_result = await start_podcast_generation(topic)
+        task_id = pod_result["task_id"]
+        for i in range(60):
+            await asyncio.sleep(3)
+            status = await get_podcast_status(task_id)
+            if status["status"] == "generating":
+                if i % 5 == 0:
+                    yield format_openai_chunk("⏳ 播客生成中...\n", model, chat_id)
+            elif status["status"] == "completed":
+                break
+            elif status["status"] in ("script_ready", "failed"):
+                break
+        if status.get("audio_url"):
+            yield format_openai_chunk(f"✅ AI播客已生成！\n\n标题：{status.get('title', topic)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听播客]({status['audio_url']})\n", model, chat_id)
+        elif status.get("script_length", 0) > 0:
+            script = await get_podcast_script(task_id)
+            yield format_openai_chunk(f"📝 AI播客脚本已生成（音频需在豆包客户端生成）\n\n{script.get('script', '')}\n", model, chat_id)
+        else:
+            yield format_openai_chunk(f"❌ 播客生成失败: {status.get('error', '未知错误')}\n", model, chat_id)
+    except Exception as e:
+        yield format_openai_chunk(f"❌ 播客生成错误: {str(e)}\n", model, chat_id)
+    yield format_openai_chunk("", model, chat_id).replace('"finish_reason": null', '"finish_reason": "stop"')
+    yield format_openai_done()
 
 
 async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
@@ -302,8 +456,9 @@ async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
     img_prompt = f"请帮我画一张关于以下内容的图片：{prompt}。要求图片尺寸大约{size}。"
     messages = [ChatMessage(role="user", content=img_prompt)]
     buffer = ""
+    event_count = 0
 
-    async for raw_chunk in call_doubao_api(messages, conversation_id, "doubao-pro-chat"):
+    async for raw_chunk in call_doubao_api(messages, conversation_id, "doubao-pro-chat", max_retries=1):
         try:
             buffer += raw_chunk.decode('utf-8', errors='replace')
         except:
@@ -319,6 +474,8 @@ async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
             if event_data is None:
                 break
 
+            event_count += 1
+
             conv_id = extract_conversation_id(event_data)
             if conv_id:
                 conversation_id = conv_id
@@ -330,6 +487,8 @@ async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
             if event_data.get("event_type") == 2003:
                 break
 
+    logger.info(f"Image gen first pass: {event_count} events, {len(all_image_urls)} URLs, conv_id={conversation_id}")
+
     if not all_image_urls and conversation_id != "0":
         logger.warning("No images on first attempt, retrying in same conversation")
         retry_prompt = "请直接生成图片，不需要文字说明。"
@@ -340,7 +499,7 @@ async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
         ]
         retry_buffer = ""
 
-        async for raw_chunk in call_doubao_api(retry_messages, conversation_id, "doubao-pro-chat"):
+        async for raw_chunk in call_doubao_api(retry_messages, conversation_id, "doubao-pro-chat", max_retries=1):
             try:
                 retry_buffer += raw_chunk.decode('utf-8', errors='replace')
             except:
@@ -375,11 +534,51 @@ async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
         })
 
     if not result["data"]:
-        result["data"] = [{
-            "url": "",
-            "revised_prompt": prompt,
-            "error": "图片生成功能暂时不可用，请稍后再试，或直接在对话中尝试。"
-        }]
+        if event_count < 5 and any("710022004" in rl or "rate_limited" in rl.lower() or "verify" in rl.lower() for rl in raw_lines):
+            result["data"] = [{
+                "url": "",
+                "revised_prompt": prompt,
+                "error": "请求被限流，请稍后再试或刷新Cookie。"
+            }]
+        else:
+            result["data"] = [{
+                "url": "",
+                "revised_prompt": prompt,
+                "error": "图片生成功能暂时不可用，请稍后再试，或直接在对话中尝试。"
+            }]
 
     logger.info(f"Generated {len(result['data'])} images for prompt: {prompt[:50]}...")
     return result
+
+
+async def delete_conversation(conversation_id: str) -> tuple[bool, str]:
+    if not conversation_id or conversation_id == "0":
+        return True, "No conversation to delete"
+
+    account = cookie_pool.get_next()
+    params = build_url_params(account)
+    url = f"{CONFIG['api_base']}/samantha/thread/delete?{params}"
+
+    headers = {
+        'content-type': 'application/json',
+        'cookie': account.get('cookie', CONFIG.get('cookie', '')),
+        'origin': 'https://www.doubao.com',
+        'referer': f"https://www.doubao.com/chat/{conversation_id}",
+        'user-agent': USER_AGENT,
+        'x-flow-trace': json.dumps({"trace_id": uuid.uuid4().hex, "span_id": uuid.uuid4().hex})
+    }
+
+    body = {"conversation_id": conversation_id}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=body, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.warning(f"Delete conversation {conversation_id} failed: {resp.status} {error_text[:200]}")
+                    return False, f"HTTP {resp.status}"
+                logger.info(f"Deleted conversation {conversation_id} on Doubao server")
+                return True, ""
+    except Exception as e:
+        logger.error(f"Delete conversation exception: {e}")
+        return False, str(e)

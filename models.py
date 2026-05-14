@@ -5,7 +5,7 @@ MODEL_CONFIG = {
     "doubao-pro-chat": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "快速模式 (Doubao-Seed-2.0-Mini)"},
     "doubao-lite-chat": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "轻量模式"},
     "doubao-thinking": {"bot_id": "7338286299411103781", "use_deep_think": True, "use_auto_cot": False, "desc": "思考模式 (Doubao-Seed-2.0-lite)"},
-    "doubao-expert": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": True, "desc": "专家/超能模式"},
+    "doubao-expert": {"bot_id": "7338286299411103781", "use_deep_think": True, "use_auto_cot": True, "use_search": True, "desc": "专家/超能模式"},
     "doubao-pro-32k": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "Pro 32K"},
     "doubao-pro-128k": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "Pro 128K"},
     "doubao-coding": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": True, "desc": "编程模式 (Doubao-Seed-Code)"},
@@ -13,7 +13,8 @@ MODEL_CONFIG = {
     "doubao-translator": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "翻译"},
     "doubao-tutor": {"bot_id": "7338286299411103781", "use_deep_think": True, "use_auto_cot": False, "desc": "解题答疑"},
     "doubao-data-analyst": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": True, "desc": "数据分析师（生成分析代码）"},
-    "doubao-image": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "图片生成（文生图）"},
+    "doubao-image": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "图片生成（文生图）", "is_image_model": True},
+    "doubao-podcast": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "AI播客生成", "is_podcast_model": True},
 }
 
 SYSTEM_PROMPT_MAP = {

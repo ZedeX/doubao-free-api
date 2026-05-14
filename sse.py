@@ -84,6 +84,7 @@ def build_request_body(messages: list[ChatMessage], conversation_id: str = "0",
     bot_id = model_cfg.get("bot_id", "7338286299411103781")
     use_deep_think = model_cfg.get("use_deep_think", False)
     use_auto_cot = model_cfg.get("use_auto_cot", False)
+    use_search = model_cfg.get("use_search", False)
 
     system_prompt = SYSTEM_PROMPT_MAP.get(model, "")
 
@@ -112,6 +113,12 @@ def build_request_body(messages: list[ChatMessage], conversation_id: str = "0",
             "references": []
         })
 
+    ext = {"fp": CONFIG.get('fp', '')}
+    if use_deep_think:
+        ext["use_deep_think"] = "1"
+    if use_search:
+        ext["use_search"] = "1"
+
     return {
         "bot_id": bot_id,
         "completion_option": {
@@ -126,9 +133,7 @@ def build_request_body(messages: list[ChatMessage], conversation_id: str = "0",
         "local_conversation_id": f"local_{uuid.uuid4().int % 10000000000000000}",
         "local_message_id": str(uuid.uuid4()),
         "messages": body_messages[-1:] if need_create else body_messages,
-        "ext": {
-            "fp": CONFIG.get('fp', '')
-        }
+        "ext": ext
     }
 
 
@@ -154,9 +159,9 @@ def parse_sse_line(line: str):
     return None
 
 
-def extract_text_from_event(parsed: dict) -> str:
+def extract_text_from_event(parsed: dict) -> tuple[str, str]:
     if not parsed:
-        return ""
+        return "", ""
     event_type = parsed.get("event_type")
     data = parsed.get("data", {})
 
@@ -165,15 +170,23 @@ def extract_text_from_event(parsed: dict) -> str:
         content_type = message.get("content_type")
         if content_type in (10000, 2001, 2008, 2071):
             raw_content = message.get("content", "")
+            thinking = ""
             if isinstance(raw_content, str) and raw_content:
                 try:
                     content_parsed = json.loads(raw_content)
-                    return content_parsed.get("text", "")
+                    text = content_parsed.get("text", "")
+                    thinking = content_parsed.get("thinking", "") or content_parsed.get("reasoning_content", "")
+                    if content_type == 2008 and not thinking:
+                        thinking = text
+                        text = ""
+                    return text, thinking
                 except json.JSONDecodeError:
-                    return raw_content
+                    return raw_content, ""
             elif isinstance(raw_content, dict):
-                return raw_content.get("text", "")
-    return ""
+                text = raw_content.get("text", "")
+                thinking = raw_content.get("thinking", "") or raw_content.get("reasoning_content", "")
+                return text, thinking
+    return "", ""
 
 
 def extract_image_urls_from_event(parsed: dict) -> list[str]:
@@ -201,12 +214,13 @@ def extract_image_urls_from_event(parsed: dict) -> list[str]:
             creations = content_parsed.get("creations", [])
             for creation in creations:
                 image_info = creation.get("image", {})
-                if image_info.get("status") == 2:
-                    url = (image_info.get("image_raw", {}).get("url") or
-                           image_info.get("image_thumb", {}).get("url") or
-                           image_info.get("image_ori", {}).get("url"))
-                    if url and url not in image_urls:
-                        image_urls.append(url)
+                status = image_info.get("status")
+                url = (image_info.get("image_raw", {}).get("url") or
+                       image_info.get("image_thumb", {}).get("url") or
+                       image_info.get("image_ori", {}).get("url") or
+                       image_info.get("image_url", ""))
+                if status == 2 and url and url not in image_urls:
+                    image_urls.append(url)
             return image_urls
     return []
 
@@ -216,7 +230,7 @@ def extract_conversation_id(parsed: dict) -> str:
     return data.get("conversation_id", "")
 
 
-def format_openai_chunk(content: str, model: str, chat_id: str, conversation_id: str = None) -> str:
+def format_openai_chunk(content: str, model: str, chat_id: str, conversation_id: str = None, reasoning_content: str = None) -> str:
     chunk = {
         "id": chat_id,
         "object": "chat.completion.chunk",
@@ -228,6 +242,8 @@ def format_openai_chunk(content: str, model: str, chat_id: str, conversation_id:
             "finish_reason": None
         }]
     }
+    if reasoning_content:
+        chunk["choices"][0]["delta"]["reasoning_content"] = reasoning_content
     if conversation_id and conversation_id != "0":
         chunk["conversation_id"] = conversation_id
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"

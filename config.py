@@ -1,6 +1,8 @@
 import json
 import os
 import logging
+import asyncio
+import time
 from datetime import datetime
 
 logger = logging.getLogger("doubao-api")
@@ -16,9 +18,27 @@ os.makedirs(CONVERSATION_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 
+COOKIE_EXPIRY_PATTERNS = [
+    "login",
+    "verify",
+    "captcha",
+    "forbidden",
+    "unauthorized",
+    "rate_limit",
+    "710022004",
+    "need_verify",
+    "risk_check",
+]
+
 def load_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def reload_config():
+    global CONFIG, SIGN_METHOD
+    CONFIG = load_config()
+    SIGN_METHOD = CONFIG.get('sign_method', 'b3')
+    logger.info("Config reloaded")
 
 def load_accounts():
     if os.path.exists(ACCOUNTS_PATH):
@@ -56,6 +76,8 @@ class CookiePool:
     def __init__(self):
         self.accounts = []
         self.current_index = 0
+        self._last_refresh = time.time()
+        self._refresh_interval = 3600
         self._init_pool()
 
     def _init_pool(self):
@@ -68,6 +90,7 @@ class CookiePool:
             "room_id": CONFIG.get('room_id', ''),
             "fail_count": 0,
             "last_fail": None,
+            "last_success": None,
             "enabled": True
         }
         self.accounts = [primary]
@@ -81,6 +104,7 @@ class CookiePool:
                 "room_id": acc.get("room_id", CONFIG.get('room_id', '')),
                 "fail_count": 0,
                 "last_fail": None,
+                "last_success": None,
                 "enabled": True
             })
         logger.info(f"Cookie pool initialized: {len(self.accounts)} accounts")
@@ -100,17 +124,68 @@ class CookiePool:
         self.current_index = (self.current_index + 1) % len(available)
         return account
 
-    def report_fail(self, account: dict):
+    def report_fail(self, account: dict, reason: str = ""):
         account["fail_count"] += 1
         account["last_fail"] = datetime.now().isoformat()
         if account["fail_count"] >= 3:
             account["enabled"] = False
-            logger.warning(f"Account '{account['name']}' disabled after 3 failures")
+            logger.warning(f"Account '{account['name']}' disabled after 3 failures. Reason: {reason}")
         else:
-            logger.warning(f"Account '{account['name']}' failure #{account['fail_count']}")
+            logger.warning(f"Account '{account['name']}' failure #{account['fail_count']}. Reason: {reason}")
 
     def report_success(self, account: dict):
         account["fail_count"] = 0
+        account["last_success"] = datetime.now().isoformat()
+
+    def is_cookie_expired(self, response_text: str, status_code: int = 200) -> bool:
+        if status_code in (401, 403):
+            return True
+        text_lower = response_text.lower()
+        for pattern in COOKIE_EXPIRY_PATTERNS:
+            if pattern in text_lower:
+                return True
+        return False
+
+    def refresh_cookies(self):
+        try:
+            extract_script = os.path.join(BASE_DIR, "temp", "extract_session.py")
+            if os.path.exists(extract_script):
+                import subprocess
+                result = subprocess.run(
+                    ["python", extract_script],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=BASE_DIR
+                )
+                if result.returncode == 0:
+                    reload_config()
+                    for acc in self.accounts:
+                        if acc["name"] == "primary":
+                            acc["cookie"] = CONFIG.get('cookie', acc["cookie"])
+                            acc["device_id"] = CONFIG.get('device_id', acc["device_id"])
+                            acc["web_id"] = CONFIG.get('web_id', acc["web_id"])
+                            acc["tea_uuid"] = CONFIG.get('tea_uuid', acc["tea_uuid"])
+                            acc["enabled"] = True
+                            acc["fail_count"] = 0
+                    self._last_refresh = time.time()
+                    logger.info("Cookies refreshed successfully from extract_session.py")
+                    return True
+                else:
+                    logger.warning(f"Cookie refresh script failed: {result.stderr[:200]}")
+                    return False
+            else:
+                logger.warning("extract_session.py not found, cannot auto-refresh cookies")
+                return False
+        except Exception as e:
+            logger.error(f"Cookie refresh failed: {e}")
+            return False
+
+    def maybe_refresh(self):
+        if time.time() - self._last_refresh > self._refresh_interval:
+            all_disabled = all(not a["enabled"] for a in self.accounts)
+            if all_disabled:
+                logger.info("All accounts disabled, attempting cookie refresh...")
+                return self.refresh_cookies()
+        return False
 
     def status(self) -> list:
         return [{
@@ -118,11 +193,72 @@ class CookiePool:
             "enabled": a["enabled"],
             "fail_count": a["fail_count"],
             "last_fail": a["last_fail"],
+            "last_success": a["last_success"],
             "cookie_length": len(a.get("cookie", ""))
         } for a in self.accounts]
 
 
 cookie_pool = CookiePool()
+
+
+class RateLimiter:
+    def __init__(self, max_requests: int = 30, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: dict[str, list[float]] = {}
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.time()
+        if key not in self._requests:
+            self._requests[key] = []
+        self._requests[key] = [t for t in self._requests[key] if now - t < self.window_seconds]
+        if len(self._requests[key]) >= self.max_requests:
+            return False
+        self._requests[key].append(now)
+        return True
+
+    def get_status(self, key: str) -> dict:
+        now = time.time()
+        if key not in self._requests:
+            return {"remaining": self.max_requests, "reset_at": now + self.window_seconds}
+        window = [t for t in self._requests[key] if now - t < self.window_seconds]
+        remaining = max(0, self.max_requests - len(window))
+        reset_at = min(window) + self.window_seconds if window else now + self.window_seconds
+        return {"remaining": remaining, "reset_at": reset_at}
+
+
+class ConcurrencyLimiter:
+    def __init__(self, max_concurrent: int = 5):
+        self.max_concurrent = max_concurrent
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._active_count = 0
+        self._total_count = 0
+
+    async def acquire(self):
+        await self._semaphore.acquire()
+        self._active_count += 1
+        self._total_count += 1
+
+    def release(self):
+        self._semaphore.release()
+        self._active_count = max(0, self._active_count - 1)
+
+    @property
+    def active(self) -> int:
+        return self._active_count
+
+    @property
+    def total(self) -> int:
+        return self._total_count
+
+
+rate_limiter = RateLimiter(
+    max_requests=CONFIG.get('rate_limit_max', 30),
+    window_seconds=CONFIG.get('rate_limit_window', 60)
+)
+concurrency_limiter = ConcurrencyLimiter(
+    max_concurrent=CONFIG.get('max_concurrent', 5)
+)
 
 
 def save_conversation_log(user_input: str, ai_output: str, model: str, conversation_id: str = "", chat_id: str = "", image_urls: list = None):

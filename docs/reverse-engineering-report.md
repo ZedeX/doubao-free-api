@@ -55,6 +55,18 @@
 | 05-14 01:07 | **V3.0 发布：Vision + 特殊模式 + 图片上传** | 10个模型、图片识别、思考/编程/写作/翻译/解题模式 |
 | 05-14 01:08 | **Vision 图片识别测试通过** | 百度Logo成功识别，图片上传→ImageX→附件发送全流程 |
 | 05-14 01:09 | **思考模式测试通过** | doubao-thinking use_deep_think参数生效 |
+| 05-14 12:00 | 代码模块化重构：main.py → config/models/sse/openai_api/anthropic_api | 提升可维护性 |
+| 05-14 12:30 | 实现Anthropic Claude Code兼容API /v1/messages | 支持Claude Code原生对接 |
+| 05-14 13:00 | 逆向分析报告脱敏处理 | sessionid/uid_tt/device_id等替换为占位符 |
+| 05-14 13:30 | GitHub仓库创建并推送代码 | ZedeX/doubao-free-api，代理localhost:1082 |
+| 05-14 14:00 | V3.2：新增数据分析师模型、图片生成API /v1/images/generations | OpenAI Image API兼容 |
+| 05-14 14:30 | 逆向JS代码发现播客API架构 | /chat/podcast/chunk + FPA_Podcast + GetGenPodcastDetail |
+| 05-14 15:00 | V3.3：实现AI播客生成（脚本+PDF上传） | /v1/podcast/generate，script_ready状态 |
+| 05-14 15:15 | 修复图片生成双会话问题，retry复用conversation_id | 同一会话内完成 |
+| 05-14 15:20 | 实现会话保持功能 | conversation_id传递+前端保持会话复选框 |
+| 05-14 15:25 | 图片生成集成到模型下拉选择（doubao-image），移除单独按钮 | 统一交互方式 |
+| 05-14 15:30 | 引入marked.js+highlight.js，完整Markdown渲染 | 标题/列表/代码块/表格/引用/链接/图片 |
+| 05-14 15:45 | 播客脚本生成测试通过 | 1900字完整播客脚本，含时间标记和分段 |
 
 ---
 

@@ -1,7 +1,9 @@
 import json
 import os
 import logging
+import asyncio
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
@@ -10,29 +12,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import (
     BASE_DIR, CONFIG, SIGN_METHOD, signer, cookie_pool,
     load_accounts, save_accounts, load_conversation_state,
-    LOG_DIR, ACCOUNTS_PATH
+    LOG_DIR, ACCOUNTS_PATH, rate_limiter, concurrency_limiter
 )
 from models import ChatCompletionRequest, AnthropicMessageRequest, MODEL_CONFIG
-from openai_api import stream_chat_completion, non_stream_chat_completion, generate_images
+from openai_api import stream_chat_completion, non_stream_chat_completion, generate_images, delete_conversation
 from anthropic_api import stream_anthropic_messages, non_stream_anthropic_messages
 from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("doubao-api")
 
-app = FastAPI(title="Doubao Free API", version="3.3.0")
+_cleanup_task = None
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.on_event("startup")
-async def startup_event():
-    global signer, SIGN_METHOD
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global signer, SIGN_METHOD, _cleanup_task
     if SIGN_METHOD == 'b2' and signer:
         logger.info("Initializing B2 Playwright signer (this may take 30-60s)...")
         success = await signer.initialize()
@@ -42,11 +36,47 @@ async def startup_event():
             logger.error("B2 Playwright signer initialization failed, falling back to B3")
             SIGN_METHOD = 'b3'
     logger.info(f"Active sign method: {SIGN_METHOD}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
+    _cleanup_task = asyncio.create_task(_auto_cleanup_task())
+    yield
+    if _cleanup_task:
+        _cleanup_task.cancel()
     if signer:
         await signer.close()
+
+app = FastAPI(title="Doubao Free API", version="3.3.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    path = request.url.path
+
+    if path.startswith("/v1/") and not rate_limiter.is_allowed(client_ip):
+        logger.warning(f"Rate limit exceeded for {client_ip} on {path}")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": {"message": "Rate limit exceeded. Please slow down.", "type": "rate_limit_error", "code": 429}
+            },
+            headers={"Retry-After": str(rate_limiter.get_status(client_ip).get("reset_at", 60))}
+        )
+
+    if path in ("/v1/chat/completions", "/v1/messages", "/v1/images/generations", "/v1/podcast/generate"):
+        await concurrency_limiter.acquire()
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            concurrency_limiter.release()
+
+    return await call_next(request)
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
@@ -155,6 +185,15 @@ async def health():
         "accounts_total": len(pool_status),
         "accounts_active": active_count,
         "accounts": pool_status,
+        "concurrency": {
+            "active": concurrency_limiter.active,
+            "max": concurrency_limiter.max_concurrent,
+            "total_served": concurrency_limiter.total
+        },
+        "rate_limit": {
+            "max_requests": rate_limiter.max_requests,
+            "window_seconds": rate_limiter.window_seconds
+        },
         "models": list(MODEL_CONFIG.keys()),
         "features": {
             "vision": True,
@@ -335,6 +374,51 @@ async def get_conversation(chat_id: str):
         raise HTTPException(status_code=404, detail="Conversation not found")
     return state
 
+@app.delete("/v1/conversations/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str):
+    success, error = await delete_conversation(conversation_id)
+    if success:
+        return {"status": "ok", "message": f"Conversation {conversation_id} deleted"}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {error}")
+
+@app.post("/v1/conversations/cleanup")
+async def cleanup_conversations():
+    import glob
+    deleted = 0
+    errors = 0
+    now = datetime.now()
+
+    pattern = os.path.join(BASE_DIR, "conversations", "*.json")
+    for filepath in glob.glob(pattern):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            conv_id = state.get("doubao_conversation_id", "")
+            updated_at = state.get("updated_at", "")
+            if conv_id and conv_id != "0":
+                if updated_at:
+                    try:
+                        updated_time = datetime.fromisoformat(updated_at)
+                        age_hours = (now - updated_time).total_seconds() / 3600
+                    except:
+                        age_hours = 999
+                else:
+                    age_hours = 999
+
+                if age_hours > CONFIG.get('conversation_cleanup_hours', 24):
+                    success, _ = await delete_conversation(conv_id)
+                    if success:
+                        os.remove(filepath)
+                        deleted += 1
+                    else:
+                        errors += 1
+        except Exception as e:
+            logger.error(f"Cleanup error for {filepath}: {e}")
+            errors += 1
+
+    return {"status": "ok", "deleted": deleted, "errors": errors}
+
 @app.get("/")
 async def index():
     html_path = os.path.join(BASE_DIR, 'index.html')
@@ -342,6 +426,44 @@ async def index():
         with open(html_path, 'r', encoding='utf-8') as f:
             return HTMLResponse(f.read())
     return HTMLResponse("<h1>Doubao API</h1><p>index.html not found</p>")
+
+async def _auto_cleanup_task():
+    interval = CONFIG.get('cleanup_interval_seconds', 3600)
+    cleanup_hours = CONFIG.get('conversation_cleanup_hours', 24)
+    logger.info(f"Auto cleanup task started: interval={interval}s, cleanup_age={cleanup_hours}h")
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            import glob
+            now = datetime.now()
+            deleted = 0
+            pattern = os.path.join(BASE_DIR, "conversations", "*.json")
+            for filepath in glob.glob(pattern):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        state = json.load(f)
+                    conv_id = state.get("doubao_conversation_id", "")
+                    updated_at = state.get("updated_at", "")
+                    if conv_id and conv_id != "0":
+                        if updated_at:
+                            try:
+                                updated_time = datetime.fromisoformat(updated_at)
+                                age_hours = (now - updated_time).total_seconds() / 3600
+                            except:
+                                age_hours = 999
+                        else:
+                            age_hours = 999
+                        if age_hours > cleanup_hours:
+                            success, _ = await delete_conversation(conv_id)
+                            if success:
+                                os.remove(filepath)
+                                deleted += 1
+                except Exception as e:
+                    logger.error(f"Auto cleanup error: {e}")
+            if deleted > 0:
+                logger.info(f"Auto cleanup: deleted {deleted} old conversations")
+        except Exception as e:
+            logger.error(f"Auto cleanup task error: {e}")
 
 if __name__ == "__main__":
     import uvicorn

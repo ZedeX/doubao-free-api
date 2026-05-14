@@ -200,6 +200,7 @@ tr:hover td{background:rgba(108,92,231,.05)}
             <option value="doubao-translator">doubao-translator (翻译)</option>
             <option value="doubao-tutor">doubao-tutor (解题)</option>
             <option value="doubao-image">doubao-image (图片生成)</option>
+            <option value="doubao-podcast">doubao-podcast (AI播客)</option>
             <option value="doubao-data-analyst">doubao-data-analyst (数据分析)</option>
             <option value="doubao-lite-chat">doubao-lite-chat (轻量)</option>
             <option value="doubao-pro-32k">doubao-pro-32k</option>
@@ -699,6 +700,7 @@ async function sendChat() {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
+    let fullThinking = '';
     let buffer = '';
 
     while (true) {
@@ -715,12 +717,22 @@ async function sendChat() {
         if (data === '[DONE]') continue;
         try {
           const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
+          const delta = json.choices?.[0]?.delta;
           if (delta) {
-            fullText += delta;
-            aiBubble.innerHTML = renderMarkdown(fullText);
-            aiBubble.classList.remove('typing');
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            if (delta.reasoning_content) {
+              fullThinking += delta.reasoning_content;
+            }
+            if (delta.content) {
+              fullText += delta.content;
+              let displayText = '';
+              if (fullThinking) {
+                displayText = '<details style="margin-bottom:8px"><summary style="cursor:pointer;color:var(--dim);font-size:12px">💭 思考过程 (' + fullThinking.length + '字)</summary><div style="padding:8px;font-size:12px;color:var(--dim);white-space:pre-wrap;border-left:2px solid var(--accent);margin-top:4px">' + escHtml(fullThinking) + '</div></details>';
+              }
+              displayText += renderMarkdown(fullText);
+              aiBubble.innerHTML = displayText;
+              aiBubble.classList.remove('typing');
+              messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
           }
           const convId = json.conversation_id;
           if (convId && convId !== '0') {
