@@ -12,6 +12,8 @@ MODEL_CONFIG = {
     "doubao-writing": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "写作助手"},
     "doubao-translator": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "翻译"},
     "doubao-tutor": {"bot_id": "7338286299411103781", "use_deep_think": True, "use_auto_cot": False, "desc": "解题答疑"},
+    "doubao-data-analyst": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": True, "desc": "数据分析师（生成分析代码）"},
+    "doubao-image": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "图片生成（文生图）"},
 }
 
 SYSTEM_PROMPT_MAP = {
@@ -19,6 +21,8 @@ SYSTEM_PROMPT_MAP = {
     "doubao-writing": "你是一个专业的写作助手，擅长各类文体写作，包括公文、邮件、文案、小说、论文等。请根据用户需求生成高质量的结构化文本。",
     "doubao-translator": "你是一个专业的翻译助手，支持多语言互译，自动检测源语言，保持原文语义和语气。请直接输出翻译结果，不要添加额外解释。",
     "doubao-tutor": "你是一个专业的解题答疑老师，擅长数学、物理、化学等学科。请逐步分析问题，给出详细的解题过程和答案，标注关键步骤和易错点。",
+    "doubao-data-analyst": "你是一个专业的数据分析师，擅长数据分析、可视化和Python编程。请根据用户描述的数据生成分析代码，使用pandas、matplotlib等库，确保代码可运行且有注释。注意：代码是生成供用户自行执行，不要试图直接运行代码。",
+    "doubao-image": "你是一个专业的AI图片生成助手。当用户描述想要的图片时，请直接使用你的图片生成能力创建图片。不需要过多文字说明，直接生成图片即可。",
 }
 
 ANTHROPIC_MODEL_MAP = {
@@ -43,6 +47,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
+    conversation_id: Optional[str] = None
 
 
 class AnthropicMessageRequest(BaseModel):

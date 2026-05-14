@@ -216,7 +216,7 @@ def extract_conversation_id(parsed: dict) -> str:
     return data.get("conversation_id", "")
 
 
-def format_openai_chunk(content: str, model: str, chat_id: str) -> str:
+def format_openai_chunk(content: str, model: str, chat_id: str, conversation_id: str = None) -> str:
     chunk = {
         "id": chat_id,
         "object": "chat.completion.chunk",
@@ -228,6 +228,8 @@ def format_openai_chunk(content: str, model: str, chat_id: str) -> str:
             "finish_reason": None
         }]
     }
+    if conversation_id and conversation_id != "0":
+        chunk["conversation_id"] = conversation_id
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
 

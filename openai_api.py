@@ -131,7 +131,7 @@ async def stream_chat_completion(request):
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     full_text = ""
     all_image_urls = []
-    conversation_id = "0"
+    conversation_id = request.conversation_id or "0"
     user_input = extract_text_from_content(request.messages[-1].content) if request.messages else ""
     buffer = ""
 
@@ -171,7 +171,7 @@ async def stream_chat_completion(request):
                 extracted = extract_text_from_event(event_data)
                 if extracted:
                     full_text += extracted
-                    yield format_openai_chunk(extracted, request.model, chat_id)
+                    yield format_openai_chunk(extracted, request.model, chat_id, conversation_id)
 
                 img_urls = extract_image_urls_from_event(event_data)
                 if img_urls:
@@ -179,7 +179,7 @@ async def stream_chat_completion(request):
                     for img_url in img_urls:
                         img_markdown = f"\n![image]({img_url})\n"
                         full_text += img_markdown
-                        yield format_openai_chunk(img_markdown, request.model, chat_id)
+                        yield format_openai_chunk(img_markdown, request.model, chat_id, conversation_id)
 
                 conv_id = extract_conversation_id(event_data)
                 if conv_id:
@@ -188,13 +188,13 @@ async def stream_chat_completion(request):
                 if event_data.get("event_type") == 2003:
                     save_conversation_log(user_input, full_text, request.model, conversation_id, chat_id, all_image_urls)
                     save_conversation_state(chat_id, request.messages, conversation_id, request.model)
-                    yield format_openai_chunk("", request.model, chat_id).replace('"finish_reason": null', '"finish_reason": "stop"')
+                    yield format_openai_chunk("", request.model, chat_id, conversation_id).replace('"finish_reason": null', '"finish_reason": "stop"')
                     yield format_openai_done()
                     return
     except Exception as e:
         logger.error(f"Stream error: {e}")
         if not full_text:
-            yield format_openai_chunk(f"[Error: {str(e)}]", request.model, chat_id)
+            yield format_openai_chunk(f"[Error: {str(e)}]", request.model, chat_id, conversation_id)
 
     if buffer.strip():
         line = buffer.strip()
@@ -203,7 +203,7 @@ async def stream_chat_completion(request):
             extracted = extract_text_from_event(event_data)
             if extracted:
                 full_text += extracted
-                yield format_openai_chunk(extracted, request.model, chat_id)
+                yield format_openai_chunk(extracted, request.model, chat_id, conversation_id)
 
             img_urls = extract_image_urls_from_event(event_data)
             if img_urls:
@@ -218,7 +218,7 @@ async def non_stream_chat_completion(request):
     chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     full_text = ""
     all_image_urls = []
-    conversation_id = "0"
+    conversation_id = request.conversation_id or "0"
     user_input = extract_text_from_content(request.messages[-1].content) if request.messages else ""
     buffer = ""
 
@@ -289,4 +289,97 @@ async def non_stream_chat_completion(request):
     if all_image_urls:
         result["images"] = all_image_urls
 
+    return result
+
+
+async def generate_images(prompt: str, n: int = 1, size: str = "1024x1024"):
+    from models import ChatMessage
+    import time
+
+    all_image_urls = []
+    conversation_id = "0"
+
+    img_prompt = f"请帮我画一张关于以下内容的图片：{prompt}。要求图片尺寸大约{size}。"
+    messages = [ChatMessage(role="user", content=img_prompt)]
+    buffer = ""
+
+    async for raw_chunk in call_doubao_api(messages, conversation_id, "doubao-pro-chat"):
+        try:
+            buffer += raw_chunk.decode('utf-8', errors='replace')
+        except:
+            continue
+
+        while '\n' in buffer:
+            line, buffer = buffer.split('\n', 1)
+            line = line.strip()
+            if not line:
+                continue
+
+            event_data = parse_sse_line(line)
+            if event_data is None:
+                break
+
+            conv_id = extract_conversation_id(event_data)
+            if conv_id:
+                conversation_id = conv_id
+
+            img_urls = extract_image_urls_from_event(event_data)
+            if img_urls:
+                all_image_urls.extend(img_urls)
+
+            if event_data.get("event_type") == 2003:
+                break
+
+    if not all_image_urls and conversation_id != "0":
+        logger.warning("No images on first attempt, retrying in same conversation")
+        retry_prompt = "请直接生成图片，不需要文字说明。"
+        retry_messages = [
+            ChatMessage(role="user", content=img_prompt),
+            ChatMessage(role="assistant", content="好的，我来为您生成图片。"),
+            ChatMessage(role="user", content=retry_prompt)
+        ]
+        retry_buffer = ""
+
+        async for raw_chunk in call_doubao_api(retry_messages, conversation_id, "doubao-pro-chat"):
+            try:
+                retry_buffer += raw_chunk.decode('utf-8', errors='replace')
+            except:
+                continue
+
+            while '\n' in retry_buffer:
+                line, retry_buffer = retry_buffer.split('\n', 1)
+                line = line.strip()
+                if not line:
+                    continue
+
+                event_data = parse_sse_line(line)
+                if event_data is None:
+                    break
+
+                img_urls = extract_image_urls_from_event(event_data)
+                if img_urls:
+                    all_image_urls.extend(img_urls)
+
+                if event_data.get("event_type") == 2003:
+                    break
+
+    result = {
+        "created": int(time.time()),
+        "data": []
+    }
+
+    for i, url in enumerate(all_image_urls[:n]):
+        result["data"].append({
+            "url": url,
+            "revised_prompt": prompt
+        })
+
+    if not result["data"]:
+        result["data"] = [{
+            "url": "",
+            "revised_prompt": prompt,
+            "error": "图片生成功能暂时不可用，请稍后再试，或直接在对话中尝试。"
+        }]
+
+    logger.info(f"Generated {len(result['data'])} images for prompt: {prompt[:50]}...")
     return result

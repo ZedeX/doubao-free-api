@@ -7,9 +7,11 @@
 - 🔄 **OpenAI 兼容** — 完全兼容 `/v1/chat/completions` 接口，支持流式/非流式
 - 🤖 **Anthropic 兼容** — 完全兼容 `/v1/messages` 接口，支持 Claude Code 原生对接
 - 🖼️ **Vision 图片识别** — 支持 OpenAI Vision 格式，自动上传图片到豆包 ImageX
+- 🎨 **图片生成** — 支持 `/v1/images/generations`，兼容 OpenAI Image API
 - 🧠 **思考模式** — 深度推理，边想边搜
 - 💻 **编程模式** — 基于 Doubao-Seed-Code 的代码生成
-- ✍️ **写作/翻译/解题** — 6种特殊模式，参数切换
+- ✍️ **写作/翻译/解题** — 7种特殊模式，参数切换
+- 📊 **数据分析师** — 生成数据分析代码（pandas/matplotlib）
 - 📊 **管理面板** — Web UI 状态监控、在线对话、日志查看
 - 👥 **多账号池** — Cookie 轮询 + 自动故障转移
 - 📝 **对话日志** — 自动记录每次输入输出
@@ -123,6 +125,7 @@ for chunk in stream:
 | `doubao-writing` | 写作助手 | 公文/邮件/文案/小说 |
 | `doubao-translator` | 翻译 | 多语言互译 |
 | `doubao-tutor` | 解题答疑 | 数学/物理/化学逐步解题 |
+| `doubao-data-analyst` | 数据分析师 | 生成数据分析代码 |
 | `doubao-lite-chat` | 轻量模式 | 轻量快速 |
 | `doubao-pro-32k` | Pro 32K | 长上下文 |
 | `doubao-pro-128k` | Pro 128K | 超长上下文 |
@@ -250,12 +253,56 @@ with client.messages.stream(
 | `/v1/messages` | POST | Anthropic Messages API（流式/非流式） |
 | `/v1/models` | GET | 模型列表（含能力描述） |
 | `/v1/images/upload` | POST | 上传图片文件 |
+| `/v1/images/generations` | POST | 图片生成（OpenAI 兼容 API） |
 | `/health` | GET | 健康检查 + 功能状态 |
 | `/logs/today` | GET | 查看今日对话日志 |
 | `/logs/{date}` | GET | 查看指定日期日志 |
 | `/accounts` | GET/POST | 账号池管理 |
 | `/accounts/{name}` | DELETE | 删除账号 |
 | `/conversations/{id}` | GET | 查看会话状态 |
+
+## 图片生成
+
+支持 OpenAI 兼容的 `/v1/images/generations` 端点，可用于生成图片：
+
+```bash
+curl -X POST http://localhost:8765/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "一只可爱的小猫",
+    "n": 1,
+    "size": "1024x1024"
+  }'
+```
+
+Python SDK 示例：
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="any-string", base_url="http://localhost:8765/v1")
+
+response = client.images.generate(
+    model="dall-e-3",  # 模型名可任意，实际使用豆包
+    prompt="一只可爱的小猫",
+    size="1024x1024",
+    n=1
+)
+
+print(response.data[0].url)
+```
+
+响应格式：
+```json
+{
+  "created": 1715731200,
+  "data": [
+    {
+      "url": "https://...",
+      "revised_prompt": "一只可爱的小猫"
+    }
+  ]
+}
+```
 
 ## 管理面板
 

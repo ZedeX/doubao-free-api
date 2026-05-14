@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Doubao API 管理面板</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e1e4ed;--dim:#8b8fa3;--accent:#6c5ce7;--accent2:#a29bfe;--green:#00b894;--red:#e74c3c;--orange:#f39c12;--blue:#0984e3;--radius:10px}
@@ -84,6 +87,22 @@ tr:hover td{background:rgba(108,92,231,.05)}
 .msg-role{font-size:11px;color:var(--dim);margin-bottom:3px;padding:0 4px}
 .msg-user .msg-role{text-align:right}
 .typing::after{content:'●●●';animation:blink 1.2s infinite;letter-spacing:2px;color:var(--accent2)}
+.chat-msg-ai{line-height:1.7}
+.chat-msg-ai h1,.chat-msg-ai h2,.chat-msg-ai h3{margin:12px 0 6px;color:var(--accent2)}
+.chat-msg-ai h1{font-size:20px}.chat-msg-ai h2{font-size:17px}.chat-msg-ai h3{font-size:15px}
+.chat-msg-ai p{margin:4px 0}
+.chat-msg-ai ul,.chat-msg-ai ol{margin:4px 0 4px 20px}
+.chat-msg-ai li{margin:2px 0}
+.chat-msg-ai code{background:var(--bg);padding:1px 5px;border-radius:3px;font-size:12px;font-family:Consolas,monospace}
+.chat-msg-ai pre{background:var(--bg);padding:10px;border-radius:6px;overflow-x:auto;margin:6px 0}
+.chat-msg-ai pre code{background:none;padding:0}
+.chat-msg-ai blockquote{border-left:3px solid var(--accent);padding-left:10px;margin:6px 0;color:var(--dim)}
+.chat-msg-ai img{max-width:100%;border-radius:6px;margin:6px 0}
+.chat-msg-ai a{color:var(--accent2);text-decoration:none}
+.chat-msg-ai a:hover{text-decoration:underline}
+.chat-msg-ai table{border-collapse:collapse;margin:6px 0;width:100%}
+.chat-msg-ai th,.chat-msg-ai td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.chat-msg-ai th{background:var(--bg)}
 @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
 
 .config-row{display:flex;align-items:center;margin-bottom:12px;gap:12px}
@@ -130,6 +149,7 @@ tr:hover td{background:rgba(108,92,231,.05)}
 <div class="tabs">
   <div class="tab active" data-tab="status">📊 状态</div>
   <div class="tab" data-tab="chat">💬 对话</div>
+  <div class="tab" data-tab="podcast">🎙️ 播客</div>
   <div class="tab" data-tab="logs">📋 日志</div>
   <div class="tab" data-tab="accounts">👤 账号</div>
   <div class="tab" data-tab="config">⚙️ 配置</div>
@@ -157,6 +177,13 @@ tr:hover td{background:rgba(108,92,231,.05)}
 </div>
 
 <div class="panel" id="panel-chat">
+  <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+    <label style="font-size:13px;color:var(--dim);display:flex;align-items:center;gap:4px">
+      <input type="checkbox" id="keepConversation" checked> 保持会话
+    </label>
+    <button class="btn" onclick="newConversation()" style="font-size:12px;padding:4px 10px">新对话</button>
+    <span id="convIdDisplay" style="font-size:11px;color:var(--dim);margin-left:auto"></span>
+  </div>
   <div class="card chat-box">
     <div class="chat-messages" id="chatMessages">
       <div style="text-align:center;padding:40px;color:var(--dim)">
@@ -165,21 +192,54 @@ tr:hover td{background:rgba(108,92,231,.05)}
     </div>
     <div class="chat-input-area">
       <select id="chatModel">
-        <option value="doubao-pro-chat">doubao-pro-chat (快速)</option>
-        <option value="doubao-thinking">doubao-thinking (思考)</option>
-        <option value="doubao-expert">doubao-expert (超能)</option>
-        <option value="doubao-coding">doubao-coding (编程)</option>
-        <option value="doubao-writing">doubao-writing (写作)</option>
-        <option value="doubao-translator">doubao-translator (翻译)</option>
-        <option value="doubao-tutor">doubao-tutor (解题)</option>
-        <option value="doubao-lite-chat">doubao-lite-chat (轻量)</option>
-        <option value="doubao-pro-32k">doubao-pro-32k</option>
-        <option value="doubao-pro-128k">doubao-pro-128k</option>
+            <option value="doubao-pro-chat">doubao-pro-chat (快速)</option>
+            <option value="doubao-thinking">doubao-thinking (思考)</option>
+            <option value="doubao-expert">doubao-expert (超能)</option>
+            <option value="doubao-coding">doubao-coding (编程)</option>
+            <option value="doubao-writing">doubao-writing (写作)</option>
+            <option value="doubao-translator">doubao-translator (翻译)</option>
+            <option value="doubao-tutor">doubao-tutor (解题)</option>
+            <option value="doubao-image">doubao-image (图片生成)</option>
+            <option value="doubao-data-analyst">doubao-data-analyst (数据分析)</option>
+            <option value="doubao-lite-chat">doubao-lite-chat (轻量)</option>
+            <option value="doubao-pro-32k">doubao-pro-32k</option>
+            <option value="doubao-pro-128k">doubao-pro-128k</option>
       </select>
       <input type="file" id="chatImage" accept="image/*" style="display:none">
       <button class="btn btn-primary" onclick="$('#chatImage').click()" title="上传图片" style="font-size:16px;padding:8px 12px">🖼️</button>
       <textarea id="chatInput" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
       <button class="btn btn-primary" id="chatSend" onclick="sendChat()">发送</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel-podcast">
+  <div class="card">
+    <div class="card-title"><span class="icon">🎙️</span> AI 播客生成</div>
+    <div style="margin-bottom:16px">
+      <label style="display:block;margin-bottom:6px;font-size:13px;color:var(--dim)">播客主题</label>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="podcastTopic" placeholder="输入播客主题，例如：人工智能的未来发展" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:13px">
+        <input type="file" id="podcastFile" accept=".pdf,.txt,.doc,.docx" style="display:none">
+        <button class="btn" onclick="$('#podcastFile').click()" title="上传PDF/文档" style="font-size:16px;padding:8px 12px">📎</button>
+        <button class="btn btn-primary" onclick="startPodcast()" id="podcastGenBtn">生成播客</button>
+      </div>
+      <div id="podcastFileName" style="font-size:12px;color:var(--dim);margin-top:4px"></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title"><span class="icon">📋</span> 播客任务列表</div>
+    <div id="podcastTaskList" style="min-height:100px">
+      <div style="text-align:center;padding:30px;color:var(--dim)">暂无播客任务</div>
+    </div>
+  </div>
+  <div class="card" id="podcastPlayerCard" style="display:none">
+    <div class="card-title"><span class="icon">🎵</span> 播客播放器</div>
+    <div style="text-align:center">
+      <div id="podcastCover" style="margin-bottom:12px"></div>
+      <h3 id="podcastPlayerTitle" style="margin-bottom:8px;font-size:16px">--</h3>
+      <p id="podcastPlayerDuration" style="color:var(--dim);font-size:13px;margin-bottom:12px">--</p>
+      <audio id="podcastAudio" controls style="width:100%;max-width:500px;margin:0 auto;display:block"></audio>
     </div>
   </div>
 </div>
@@ -598,7 +658,7 @@ async function sendChat() {
 
   const aiDiv = document.createElement('div');
   aiDiv.className = 'msg msg-ai';
-  aiDiv.innerHTML = `<div class="msg-role">豆包 (${model})</div><div class="msg-bubble typing"></div>`;
+  aiDiv.innerHTML = `<div class="msg-role">豆包 (${model})</div><div class="msg-bubble chat-msg-ai typing"></div>`;
   messagesDiv.appendChild(aiDiv);
   const aiBubble = aiDiv.querySelector('.msg-bubble');
 
@@ -613,14 +673,19 @@ async function sendChat() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
 
+    const reqBody = {
+      model,
+      messages: [{ role: 'user', content }],
+      stream: true
+    };
+    if ($('#keepConversation').checked && chatConversationId) {
+      reqBody.conversation_id = chatConversationId;
+    }
+
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content }],
-        stream: true
-      }),
+      body: JSON.stringify(reqBody),
       signal: controller.signal
     });
 
@@ -657,6 +722,11 @@ async function sendChat() {
             aiBubble.classList.remove('typing');
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
           }
+          const convId = json.conversation_id;
+          if (convId && convId !== '0') {
+            chatConversationId = convId;
+            $('#convIdDisplay').textContent = `会话: ${convId.substring(0, 8)}...`;
+          }
         } catch {}
       }
     }
@@ -676,8 +746,21 @@ async function sendChat() {
 }
 
 function renderMarkdown(text) {
+  if (typeof marked !== 'undefined') {
+    marked.setOptions({
+      highlight: function(code, lang) {
+        if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+          return hljs.highlight(code, {language: lang}).value;
+        }
+        return typeof hljs !== 'undefined' ? hljs.highlightAuto(code).value : code;
+      },
+      breaks: true,
+      gfm: true
+    });
+    return marked.parse(text);
+  }
   let html = escHtml(text);
-  html = html.replace(/!\[image\]\(([^)]+)\)/g, '<img src="$1" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;display:block">');
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;display:block">');
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/`([^`]+)`/g, '<code style="background:var(--bg);padding:1px 4px;border-radius:3px;font-size:12px">$1</code>');
   return html;
@@ -694,6 +777,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (t === 'logs') loadLogs();
     if (t === 'accounts') loadAccounts();
     if (t === 'config') loadConfig();
+    if (t === 'podcast') loadPodcastList();
   });
 });
 
@@ -725,6 +809,328 @@ const today = new Date().toISOString().split('T')[0];
 $('#logDate').value = today;
 
 loadStatus();
+
+function showImageGenerator() {
+  const modal = document.createElement('div');
+  modal.id = 'imageGeneratorModal';
+  modal.style.cssText = `
+    position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:1000
+  `;
+  modal.innerHTML = `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:90%;max-width:500px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <h3 style="font-size:18px;color:var(--text)">🎨 图片生成</h3>
+        <button onclick="closeImageGenerator()" style="background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer">&times;</button>
+      </div>
+      <div style="margin-bottom:16px">
+        <label style="display:block;margin-bottom:6px;font-size:13px;color:var(--dim)">生成提示词</label>
+        <textarea id="imagePrompt" placeholder="请输入图片描述，例如：一只可爱的小猫在草地上玩耍" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:13px;resize:none"></textarea>
+      </div>
+      <div style="display:flex;gap:12px;margin-bottom:16px">
+        <div style="flex:1">
+          <label style="display:block;margin-bottom:6px;font-size:13px;color:var(--dim)">数量</label>
+          <select id="imageCount" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px">
+            <option value="1">1 张</option>
+            <option value="2">2 张</option>
+            <option value="3">3 张</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label style="display:block;margin-bottom:6px;font-size:13px;color:var(--dim)">尺寸</label>
+          <select id="imageSize" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-size:13px">
+            <option value="1024x1024">1024×1024</option>
+            <option value="1024x1792">1024×1792</option>
+            <option value="1792x1024">1792×1024</option>
+          </select>
+        </div>
+      </div>
+      <div id="imageResult" style="min-height:100px;margin-bottom:16px;border:1px dashed var(--border);border-radius:6px;padding:12px;text-align:center;color:var(--dim)">
+        点击生成按钮开始生成图片
+      </div>
+      <div style="display:flex;gap:12px">
+        <button onclick="closeImageGenerator()" class="btn" style="flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text)">取消</button>
+        <button onclick="generateImage()" class="btn btn-primary" style="flex:1">生成图片</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function closeImageGenerator() {
+  const modal = $('#imageGeneratorModal');
+  if (modal) modal.remove();
+}
+
+async function generateImage() {
+  const prompt = $('#imagePrompt').value.trim();
+  const count = parseInt($('#imageCount').value);
+  const size = $('#imageSize').value;
+  const resultDiv = $('#imageResult');
+
+  if (!prompt) {
+    toast('请输入图片描述', 'error');
+    return;
+  }
+
+  resultDiv.innerHTML = '<div style="padding:20px">生成中...</div>';
+
+  try {
+    const res = await fetch(getApiUrl('/v1/images/generations'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, n: count, size })
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      resultDiv.innerHTML = `<div style="padding:20px;color:var(--red)">生成失败: ${err.detail || '未知错误'}</div>`;
+      return;
+    }
+
+    const data = await res.json();
+    const images = data.data || [];
+
+    if (images.length === 0) {
+      resultDiv.innerHTML = '<div style="padding:20px">未能生成图片，请尝试其他描述词</div>';
+      return;
+    }
+
+    let html = '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">';
+    images.forEach((img, i) => {
+      if (img.url) {
+        html += `
+          <div style="position:relative">
+            <img src="${img.url}" style="max-width:200px;max-height:200px;border-radius:6px" alt="生成的图片 ${i+1}">
+            <button onclick="copyImageUrl('${img.url}')" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer">复制链接</button>
+          </div>
+        `;
+      } else if (img.error) {
+        html += `<div style="padding:12px;color:var(--red)">错误: ${img.error}</div>`;
+      }
+    });
+    html += '</div>';
+    resultDiv.innerHTML = html;
+  } catch (e) {
+    resultDiv.innerHTML = `<div style="padding:20px;color:var(--red)">请求失败: ${e.message}</div>`;
+    console.error('Image generation error:', e);
+  }
+}
+
+function copyImageUrl(url) {
+  navigator.clipboard.writeText(url).then(() => {
+    toast('链接已复制', 'success');
+  });
+}
+
+let podcastPollingTimer = null;
+
+$('#podcastFile').addEventListener('change', function() {
+  const file = this.files[0];
+  if (file) {
+    $('#podcastFileName').textContent = '已选择: ' + file.name;
+  } else {
+    $('#podcastFileName').textContent = '';
+  }
+});
+
+function newConversation() {
+  chatConversationId = '';
+  $('#convIdDisplay').textContent = '';
+  const messagesDiv = $('#chatMessages');
+  messagesDiv.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">新对话已开始<br><small>选择模型，输入消息开始对话</small></div>';
+  toast('已开始新对话', 'info');
+}
+
+async function startPodcast() {
+  const topic = $('#podcastTopic').value.trim();
+  const fileInput = $('#podcastFile');
+  const file = fileInput.files[0];
+
+  if (!topic && !file) { toast('请输入播客主题或上传文件', 'error'); return; }
+
+  const btn = $('#podcastGenBtn');
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+
+  try {
+    let fileInfo = null;
+
+    if (file) {
+      toast('正在上传文件...', 'info');
+      const formData = new FormData();
+      formData.append('file', file);
+      const uploadRes = await fetch(getApiUrl('/v1/podcast/upload'), {
+        method: 'POST',
+        body: formData
+      });
+      if (!uploadRes.ok) throw new Error(`Upload failed: ${uploadRes.status}`);
+      const uploadData = await uploadRes.json();
+      fileInfo = uploadData.file_info;
+      toast('文件上传成功', 'success');
+    }
+
+    const res = await fetch(getApiUrl('/v1/podcast/generate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: topic || '根据上传的文件生成播客', file_info: fileInfo })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    toast(`播客任务已创建: ${data.task_id}`, 'success');
+    $('#podcastTopic').value = '';
+    fileInput.value = '';
+    $('#podcastFileName').textContent = '';
+    loadPodcastList();
+    startPodcastPolling(data.task_id);
+  } catch (e) {
+    toast(`生成失败: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '生成播客';
+  }
+}
+
+async function loadPodcastList() {
+  try {
+    const data = await api('/v1/podcast/list');
+    const tasks = data.tasks || [];
+    const container = $('#podcastTaskList');
+
+    if (tasks.length === 0) {
+      container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--dim)">暂无播客任务</div>';
+      return;
+    }
+
+    let html = '<table><thead><tr><th>主题</th><th>状态</th><th>标题</th><th>时长</th><th>操作</th></tr></thead><tbody>';
+    tasks.forEach(t => {
+      const statusMap = {
+        generating: '<span class="badge orange">生成中</span>',
+        script_ready: '<span class="badge blue">脚本就绪</span>',
+        completed: '<span class="badge green">已完成</span>',
+        failed: '<span class="badge red">失败</span>'
+      };
+      const statusHtml = statusMap[t.status] || `<span class="badge blue">${t.status}</span>`;
+      const duration = t.duration ? Math.floor(t.duration / 60) + ':' + String(t.duration % 60).padStart(2, '0') : '--';
+      const actions = t.status === 'completed'
+        ? `<button class="btn btn-primary" onclick="playPodcast('${t.task_id}')" style="font-size:12px;padding:4px 10px">播放</button>`
+        : t.status === 'script_ready'
+        ? `<button class="btn btn-primary" onclick="viewPodcastScript('${t.task_id}')" style="font-size:12px;padding:4px 10px">查看脚本</button>`
+        : t.status === 'generating'
+        ? `<button class="btn" onclick="refreshPodcastStatus('${t.task_id}')" style="font-size:12px;padding:4px 10px">刷新</button>`
+        : '';
+      html += `<tr><td>${escHtml(t.topic)}</td><td>${statusHtml}</td><td>${escHtml(t.title || '--')}</td><td>${duration}</td><td>${actions}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('Load podcast list error:', e);
+  }
+}
+
+async function refreshPodcastStatus(taskId) {
+  try {
+    const data = await api(`/v1/podcast/status/${taskId}`);
+    toast(`状态: ${data.status}`, data.status === 'completed' ? 'success' : 'info');
+    loadPodcastList();
+    if (data.status === 'completed') {
+      playPodcast(taskId);
+    }
+  } catch (e) {
+    toast(`查询失败: ${e.message}`, 'error');
+  }
+}
+
+async function playPodcast(taskId) {
+  try {
+    const data = await api(`/v1/podcast/audio/${taskId}`);
+    if (data.error) {
+      toast(data.error, 'error');
+      return;
+    }
+
+    const playerCard = $('#podcastPlayerCard');
+    playerCard.style.display = 'block';
+
+    if (data.cover_url) {
+      $('#podcastCover').innerHTML = `<img src="${data.cover_url}" style="max-width:200px;max-height:200px;border-radius:8px">`;
+    } else {
+      $('#podcastCover').innerHTML = '<div style="font-size:60px">🎙️</div>';
+    }
+
+    $('#podcastPlayerTitle').textContent = data.title || 'AI 播客';
+    const dur = data.duration ? Math.floor(data.duration / 60) + ':' + String(data.duration % 60).padStart(2, '0') : '--:--';
+    $('#podcastPlayerDuration').textContent = `时长: ${dur}`;
+
+    const audio = $('#podcastAudio');
+    audio.src = data.audio_url;
+    audio.play().catch(() => {});
+
+    playerCard.scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast(`播放失败: ${e.message}`, 'error');
+  }
+}
+
+async function viewPodcastScript(taskId) {
+  try {
+    const data = await api(`/v1/podcast/script/${taskId}`);
+    if (data.error) { toast(data.error, 'error'); return; }
+
+    const playerCard = $('#podcastPlayerCard');
+    playerCard.style.display = 'block';
+    $('#podcastCover').innerHTML = '<div style="font-size:60px">📝</div>';
+    $('#podcastPlayerTitle').textContent = data.title || 'AI 播客脚本';
+    $('#podcastPlayerDuration').textContent = `脚本长度: ${data.script.length} 字符`;
+
+    const audio = $('#podcastAudio');
+    audio.src = '';
+    audio.style.display = 'none';
+
+    let scriptDiv = $('#podcastScriptContent');
+    if (!scriptDiv.length) {
+      scriptDiv = document.createElement('div');
+      scriptDiv.id = 'podcastScriptContent';
+      scriptDiv.style.cssText = 'text-align:left;max-height:400px;overflow-y:auto;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;font-size:13px;line-height:1.7';
+      playerCard.appendChild(scriptDiv);
+    }
+    scriptDiv.innerHTML = renderMarkdown(data.script || '无脚本内容');
+    scriptDiv.style.display = 'block';
+
+    playerCard.scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    toast(`查看脚本失败: ${e.message}`, 'error');
+  }
+}
+
+function startPodcastPolling(taskId) {
+  if (podcastPollingTimer) clearInterval(podcastPollingTimer);
+  let count = 0;
+  podcastPollingTimer = setInterval(async () => {
+    count++;
+    if (count > 60) { clearInterval(podcastPollingTimer); return; }
+    try {
+      const data = await api(`/v1/podcast/status/${taskId}`);
+      if (data.status === 'completed') {
+        clearInterval(podcastPollingTimer);
+        toast('播客生成完成！', 'success');
+        loadPodcastList();
+        playPodcast(taskId);
+      } else if (data.status === 'script_ready') {
+        clearInterval(podcastPollingTimer);
+        toast('播客脚本已生成！音频需要豆包客户端触发', 'info');
+        loadPodcastList();
+      } else if (data.status === 'failed') {
+        clearInterval(podcastPollingTimer);
+        toast(`播客生成失败: ${data.error || '未知错误'}`, 'error');
+        loadPodcastList();
+      } else {
+        loadPodcastList();
+      }
+    } catch (e) {
+      console.error('Podcast polling error:', e);
+    }
+  }, 5000);
+}
 </script>
 </body>
 </html>

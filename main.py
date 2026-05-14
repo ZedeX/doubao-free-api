@@ -13,13 +13,14 @@ from config import (
     LOG_DIR, ACCOUNTS_PATH
 )
 from models import ChatCompletionRequest, AnthropicMessageRequest, MODEL_CONFIG
-from openai_api import stream_chat_completion, non_stream_chat_completion
+from openai_api import stream_chat_completion, non_stream_chat_completion, generate_images
 from anthropic_api import stream_anthropic_messages, non_stream_anthropic_messages
+from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("doubao-api")
 
-app = FastAPI(title="Doubao Free API", version="3.1.0")
+app = FastAPI(title="Doubao Free API", version="3.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -118,13 +119,37 @@ async def upload_image_endpoint(file: UploadFile = File(...)):
         logger.error(f"Image upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/v1/images/generations")
+async def generate_images_endpoint(request: Request):
+    """
+    OpenAI 兼容的图片生成 API
+    请求体示例: { "prompt": "一只可爱的小猫", "n": 1, "size": "1024x1024" }
+    """
+    try:
+        body = await request.json()
+        prompt = body.get("prompt", "")
+        n = body.get("n", 1)
+        size = body.get("size", "1024x1024")
+        
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Missing 'prompt' is required")
+        
+        result = await generate_images(prompt, n=n, size=size)
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Image generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health():
     pool_status = cookie_pool.status()
     active_count = sum(1 for a in pool_status if a["enabled"])
     result = {
         "status": "ok" if active_count > 0 else "degraded",
-        "version": "3.1.0",
+        "version": "3.3.0",
         "cookie_set": bool(CONFIG.get('cookie')),
         "sign_method": SIGN_METHOD,
         "accounts_total": len(pool_status),
@@ -134,19 +159,86 @@ async def health():
         "features": {
             "vision": True,
             "image_upload": True,
+            "image_generation": True,
             "deep_think": True,
             "expert_mode": True,
             "coding_mode": True,
             "writing_mode": True,
             "translation": True,
             "tutor_mode": True,
-            "anthropic_api": True
+            "data_analyst_mode": True,
+            "anthropic_api": True,
+            "podcast": True
         }
     }
     if SIGN_METHOD == 'b2' and signer:
         result["signer_initialized"] = signer._initialized
         result["ms_token_available"] = bool(signer.ms_token)
     return result
+
+@app.post("/v1/podcast/generate")
+async def podcast_generate(request: Request):
+    try:
+        body = await request.json()
+        topic = body.get("topic", "")
+        conversation_id = body.get("conversation_id", "0")
+        file_info = body.get("file_info")
+        if not topic and not file_info:
+            raise HTTPException(status_code=400, detail="'topic' or 'file_info' is required")
+        result = await start_podcast_generation(topic, conversation_id, file_info)
+        return JSONResponse(content=result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Podcast generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/v1/podcast/upload")
+async def podcast_upload_pdf(file: UploadFile = File(...)):
+    from uploader import upload_image
+    account = cookie_pool.get_next()
+    file_data = await file.read()
+    file_name = file.filename or "upload.pdf"
+
+    try:
+        attachment = await upload_image(
+            file_data=file_data,
+            file_name=file_name,
+            cookie=account.get('cookie', CONFIG.get('cookie', '')),
+            device_id=account.get('device_id', ''),
+            tea_uuid=account.get('tea_uuid', ''),
+            web_id=account.get('web_id', '')
+        )
+        return {"status": "ok", "file_info": attachment}
+    except Exception as e:
+        logger.error(f"Podcast file upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/v1/podcast/status/{task_id}")
+async def podcast_status(task_id: str):
+    result = await get_podcast_status(task_id)
+    if "error" in result and result.get("error") == "Task not found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return JSONResponse(content=result)
+
+@app.get("/v1/podcast/audio/{task_id}")
+async def podcast_audio(task_id: str):
+    result = await get_podcast_audio(task_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return JSONResponse(content=result)
+
+@app.get("/v1/podcast/list")
+async def podcast_list():
+    result = await list_podcasts()
+    return JSONResponse(content=result)
+
+@app.get("/v1/podcast/script/{task_id}")
+async def podcast_script(task_id: str):
+    result = await get_podcast_script(task_id)
+    if "error" in result and result.get("error") == "Task not found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return JSONResponse(content=result)
 
 @app.get("/logs/today")
 async def get_today_logs():
