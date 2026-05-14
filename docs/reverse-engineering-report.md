@@ -24,7 +24,7 @@
 | 05-13 23:05 | 创建项目目录 doubao-api/ 和 temp/ | 临时文件独立存放 |
 | 05-13 23:10 | 安装依赖：pycryptodome, aiohttp, fastapi, uvicorn, httpx | Python 3.13 环境 |
 | 05-13 23:15 | 从 SQLite 提取豆包 Cookie | DPAPI 解密密钥正确，v10 AES-GCM 解密部分乱码，关键 Cookie 可提取 |
-| 05-13 23:20 | 提取 sessionid、uid_tt、device_id 等关键参数 | sessionid=e6ceea5358daa4f1a9681a981acb64ed |
+| 05-13 23:20 | 提取 sessionid、uid_tt、device_id 等关键参数 | sessionid=<已脱敏> |
 | 05-13 23:25 | 实现 B3 方案 FastAPI 服务（main.py） | OpenAI 兼容 /v1/chat/completions + /v1/models |
 | 05-13 23:30 | 首次测试 B3 方案 — SSE 解析失败 | 原因：event_data 是 JSON 字符串需二次解析 |
 | 05-13 23:35 | 修正 SSE 解析器，二次/三次 JSON 解析 | 外层 event_type + 内层 message.content 三层嵌套 |
@@ -123,7 +123,7 @@ POST https://www.doubao.com/samantha/chat/completion
 豆包使用 **Cookie-based 认证**，关键字段为 `sessionid`：
 
 ```
-Cookie: sessionid=6750e5af32eb15976...; ...
+Cookie: sessionid=<已脱敏>; ...
 ```
 
 在桌面客户端中，该 Cookie 存储在 Chromium 的 Cookie 数据库中：
@@ -850,10 +850,10 @@ async def call_doubao_api(prompt: str, session_config: dict):
 
 | 参数 | 值 | 来源 |
 |---|---|---|
-| sessionid | `e6ceea5358daa4f1a9681a981acb64ed` | Cookie DB |
-| uid_tt | `b58fc71e5ba64f0b3f629fe9668f0e63` | Cookie DB |
-| device_id | `1684926682904718` | Local State → aha.device |
-| install_id | `766776241828400` | Local State → aha.device |
+| sessionid | `<已脱敏>` | Cookie DB |
+| uid_tt | `<已脱敏>` | Cookie DB |
+| device_id | `<已脱敏>` | Local State → aha.device |
+| install_id | `<已脱敏>` | Local State → aha.device |
 
 **结论**：✅ Cookie 提取成功，关键认证参数完整
 
