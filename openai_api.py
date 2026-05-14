@@ -159,6 +159,7 @@ async def stream_chat_completion(request):
     model_cfg = MODEL_CONFIG.get(request.model, {})
     is_image_model = model_cfg.get("is_image_model", False)
     is_podcast_model = model_cfg.get("is_podcast_model", False)
+    is_music_model = model_cfg.get("is_music_model", False)
 
     if is_image_model:
         async for chunk in _stream_image_generation(user_input, request.model, chat_id):
@@ -167,6 +168,11 @@ async def stream_chat_completion(request):
 
     if is_podcast_model:
         async for chunk in _stream_podcast_generation(user_input, request.model, chat_id):
+            yield chunk
+        return
+
+    if is_music_model:
+        async for chunk in _stream_music_generation(user_input, request.model, chat_id):
             yield chunk
         return
 
@@ -326,6 +332,38 @@ async def non_stream_chat_completion(request):
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         }
 
+    if is_music_model:
+        from music import start_music_generation, get_music_status
+        import time as _time
+        music_result = await start_music_generation(user_input, conversation_id)
+        task_id = music_result["task_id"]
+        for _ in range(60):
+            await asyncio.sleep(3)
+            status = await get_music_status(task_id)
+            if status["status"] in ("completed", "lyrics_ready", "failed"):
+                break
+        music_text = ""
+        if status.get("audio_url"):
+            music_text = f"🎵 AI音乐已生成！\n\n标题：{status.get('title', user_input)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听音乐]({status['audio_url']})"
+        elif status.get("lyrics_length", 0) > 0:
+            from music import get_music_lyric
+            lyric = await get_music_lyric(task_id)
+            music_text = f"🎵 AI音乐歌词已生成（音频需在豆包客户端生成）\n\n{lyric.get('lyric', '')}"
+        else:
+            music_text = f"音乐生成失败: {status.get('error', '未知错误')}"
+        return {
+            "id": chat_id,
+            "object": "chat.completion",
+            "created": int(_time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": music_text},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
+
     last_msg = request.messages[-1] if request.messages else None
     image_urls = extract_image_urls_from_content(last_msg.content) if last_msg and isinstance(last_msg.content, list) else []
     attachments = None
@@ -442,6 +480,35 @@ async def _stream_podcast_generation(topic: str, model: str, chat_id: str):
             yield format_openai_chunk(f"❌ 播客生成失败: {status.get('error', '未知错误')}\n", model, chat_id)
     except Exception as e:
         yield format_openai_chunk(f"❌ 播客生成错误: {str(e)}\n", model, chat_id)
+    yield format_openai_chunk("", model, chat_id).replace('"finish_reason": null', '"finish_reason": "stop"')
+    yield format_openai_done()
+
+
+async def _stream_music_generation(prompt: str, model: str, chat_id: str):
+    from music import start_music_generation, get_music_status, get_music_lyric
+    yield format_openai_chunk("🎵 正在生成AI音乐，请稍候...\n", model, chat_id)
+    try:
+        music_result = await start_music_generation(prompt)
+        task_id = music_result["task_id"]
+        for i in range(60):
+            await asyncio.sleep(3)
+            status = await get_music_status(task_id)
+            if status["status"] == "generating":
+                if i % 5 == 0:
+                    yield format_openai_chunk("⏳ 音乐生成中...\n", model, chat_id)
+            elif status["status"] == "completed":
+                break
+            elif status["status"] in ("lyrics_ready", "failed"):
+                break
+        if status.get("audio_url"):
+            yield format_openai_chunk(f"✅ AI音乐已生成！\n\n标题：{status.get('title', prompt)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听音乐]({status['audio_url']})\n", model, chat_id)
+        elif status.get("lyrics_length", 0) > 0:
+            lyric = await get_music_lyric(task_id)
+            yield format_openai_chunk(f"📝 AI音乐歌词已生成（音频需在豆包客户端生成）\n\n{lyric.get('lyric', '')}\n", model, chat_id)
+        else:
+            yield format_openai_chunk(f"❌ 音乐生成失败: {status.get('error', '未知错误')}\n", model, chat_id)
+    except Exception as e:
+        yield format_openai_chunk(f"❌ 音乐生成错误: {str(e)}\n", model, chat_id)
     yield format_openai_chunk("", model, chat_id).replace('"finish_reason": null', '"finish_reason": "stop"')
     yield format_openai_done()
 

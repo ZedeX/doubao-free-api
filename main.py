@@ -18,6 +18,7 @@ from models import ChatCompletionRequest, AnthropicMessageRequest, MODEL_CONFIG
 from openai_api import stream_chat_completion, non_stream_chat_completion, generate_images, delete_conversation
 from anthropic_api import stream_anthropic_messages, non_stream_anthropic_messages
 from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts
+from music import start_music_generation, get_music_status, get_music_audio, get_music_lyric, list_music, get_music_styles
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("doubao-api")
@@ -277,6 +278,51 @@ async def podcast_script(task_id: str):
     result = await get_podcast_script(task_id)
     if "error" in result and result.get("error") == "Task not found":
         raise HTTPException(status_code=404, detail="Task not found")
+    return JSONResponse(content=result)
+
+@app.post("/v1/music/generate")
+async def music_generate(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    conversation_id = body.get("conversation_id", "0")
+    style = body.get("style", "")
+    mood = body.get("mood", "")
+    voice = body.get("voice", "")
+    lyric = body.get("lyric", "")
+    if not prompt and not lyric:
+        raise HTTPException(status_code=400, detail="prompt or lyric is required")
+    result = await start_music_generation(prompt, conversation_id, style=style, mood=mood, voice=voice, lyric=lyric)
+    return JSONResponse(content=result)
+
+@app.get("/v1/music/status/{task_id}")
+async def music_status(task_id: str):
+    result = await get_music_status(task_id)
+    if "error" in result and result.get("error") == "Task not found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return JSONResponse(content=result)
+
+@app.get("/v1/music/audio/{task_id}")
+async def music_audio(task_id: str):
+    result = await get_music_audio(task_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return JSONResponse(content=result)
+
+@app.get("/v1/music/lyric/{task_id}")
+async def music_lyric(task_id: str):
+    result = await get_music_lyric(task_id)
+    if "error" in result and result.get("error") == "Task not found":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return JSONResponse(content=result)
+
+@app.get("/v1/music/list")
+async def music_list():
+    result = await list_music()
+    return JSONResponse(content=result)
+
+@app.get("/v1/music/styles")
+async def music_styles():
+    result = await get_music_styles()
     return JSONResponse(content=result)
 
 @app.get("/logs/today")

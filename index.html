@@ -502,6 +502,7 @@ tr:hover td{background:rgba(108,92,231,.05)}
         <button class="model-tab" data-model="doubao-writing">写作</button>
         <button class="model-tab" data-model="doubao-image">图片</button>
         <button class="model-tab" data-model="doubao-podcast">播客</button>
+        <button class="model-tab" data-model="doubao-music">音乐</button>
       </div>
       <div class="topbar-right">
         <label class="keep-conv-label"><input type="checkbox" id="keepConversation" checked> 保持会话</label>
@@ -724,7 +725,8 @@ const MODEL_MAP = {
   'doubao-coding': '编程',
   'doubao-writing': '写作',
   'doubao-image': '图片',
-  'doubao-podcast': '播客'
+  'doubao-podcast': '播客',
+  'doubao-music': '音乐'
 };
 
 document.querySelectorAll('.model-tab').forEach(tab => {

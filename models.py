@@ -15,6 +15,7 @@ MODEL_CONFIG = {
     "doubao-data-analyst": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": True, "desc": "数据分析师（生成分析代码）"},
     "doubao-image": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "图片生成（文生图）", "is_image_model": True},
     "doubao-podcast": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "AI播客生成", "is_podcast_model": True},
+    "doubao-music": {"bot_id": "7338286299411103781", "use_deep_think": False, "use_auto_cot": False, "desc": "AI音乐生成", "is_music_model": True},
 }
 
 SYSTEM_PROMPT_MAP = {
