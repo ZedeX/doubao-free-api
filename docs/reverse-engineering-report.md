@@ -1500,6 +1500,45 @@ V3.0 在 V2.0 基础上实现了三大核心功能：
 
 1. **编程模式 bot_id**：当前使用通用 bot_id，需抓取编程模式专用 bot_id
 2. **写作/解题 bot_id**：同上，专用 bot_id 可能提供更好的效果
-3. **联网搜索参数**：超能模式的 `use_search` 参数未确认
-4. **图片生成端点**：AI 生成图片的独立端点未逆向
+3. **联网搜索参数**：超能模式的 `use_search` 参数已添加到 ext 字段 ✅
+4. **图片生成端点**：doubao-image 模型已重定向到 generate_images() ✅
 5. **base64 大图片**：超过 10MB 的 base64 图片可能上传失败
+
+---
+
+## 14. v3.4.0 功能完善 (05-14 20:00)
+
+### 14.1 修复4大用户反馈问题
+
+| 问题 | 修复方案 | 状态 |
+|---|---|---|
+| doubao-image 不生成图片 | 重定向到 `generate_images()` 并格式化为 chat completion | ✅ |
+| 超能模式未激活 | 添加 `use_deep_think: True` + `use_search: "1"` 到 ext 字段 | ✅ |
+| thinking 内容未返回 | 通过 `reasoning_content` 字段返回，兼容 OpenAI o1 格式 | ✅ |
+| AI播客模式未触发 | 新增 `doubao-podcast` 模型，自动调用播客生成流程 | ✅ |
+
+### 14.2 Cookie 过期检测与自动刷新
+
+- `CookiePool.is_cookie_expired()` 检测 710022004/rate_limit/verify 等错误
+- `CookiePool.maybe_refresh()` 自动调用 `extract_session.py` 刷新
+- SSE 流内错误检测：`call_doubao_api` 在流中检测到过期时自动重试
+
+### 14.3 请求限流和并发控制
+
+- `RateLimiter`: 30请求/60秒窗口，按IP限流，超限返回 429
+- `ConcurrencyLimiter`: 最大5并发，信号量控制核心API端点
+- `/health` 端点新增 `concurrency` 和 `rate_limit` 状态信息
+
+### 14.4 会话自动清理
+
+- `delete_conversation()`: 调用豆包 `POST /samantha/thread/delete` API
+- `DELETE /v1/conversations/{id}`: 手动删除指定会话
+- `POST /v1/conversations/cleanup`: 批量清理过期会话
+- 后台定时任务：每小时清理超过24小时的旧会话
+
+### 14.5 其他改进
+
+- 迁移 `on_event` 到 `lifespan` 上下文管理器（消除 DeprecationWarning）
+- 前端显示 thinking 内容为可折叠 `<details>` 区块
+- 前端新增 `doubao-podcast` 模型选项
+- 图片生成限流时显示"请求被限流"而非"图片生成失败"
