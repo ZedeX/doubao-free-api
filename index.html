@@ -277,6 +277,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC
 .mermaid-code pre{margin:0;padding:12px;background:var(--sidebar-bg);overflow-x:auto}
 .mermaid-chart{padding:16px;text-align:center;background:var(--main-bg)}
 .mermaid-chart svg{max-width:100%}
+.mermaid-error{border-top:1px solid var(--border);background:var(--card-bg)}
 
 .code-block-wrapper{margin:8px 0;border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .code-block-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:var(--card-bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--dim)}
@@ -795,6 +796,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 if (typeof mermaid !== 'undefined') {
   mermaid.initialize({startOnLoad: false, theme: 'dark', securityLevel: 'loose'});
+  mermaid.parseError = function(err) { console.warn('Mermaid parse error:', err); };
 }
 let API_BASE = '';
 let allLogs = [];
@@ -1439,7 +1441,7 @@ function renderMarkdown(text) {
       const lang = (typeof token === 'object' && token !== null) ? (token.lang || '') : (arguments[1] || '');
       if (lang === 'mermaid') {
         const id = 'mermaid_' + Math.random().toString(36).substr(2, 9);
-        return `<div class="mermaid-wrapper"><div class="mermaid-header"><span>Mermaid 图表</span><button class="mermaid-toggle" onclick="toggleMermaidView('${id}')">切换代码/图表</button></div><div id="${id}_code" class="mermaid-code"><pre><code class="language-mermaid">${escHtml(code)}</code></pre></div><div id="${id}_chart" class="mermaid-chart" style="display:none"><div class="mermaid">${escHtml(code)}</div></div></div>`;
+        return `<div class="mermaid-wrapper"><div class="mermaid-header"><span>Mermaid 图表</span><button class="mermaid-toggle" onclick="toggleMermaidView('${id}')">切换代码/图表</button></div><div id="${id}_code" class="mermaid-code"><pre><code class="language-mermaid">${escHtml(code)}</code></pre></div><div id="${id}_chart" class="mermaid-chart" style="display:none"><div id="${id}_mermaid" class="mermaid">${escHtml(code)}</div></div><div id="${id}_error" class="mermaid-error" style="display:none"></div></div>`;
       }
       const highlighted = lang && typeof hljs !== 'undefined' && hljs.getLanguage(lang)
         ? hljs.highlight(code, {language: lang}).value
@@ -1473,16 +1475,35 @@ function renderMarkdown(text) {
 function toggleMermaidView(id) {
   const codeEl = document.getElementById(id + '_code');
   const chartEl = document.getElementById(id + '_chart');
+  const errorEl = document.getElementById(id + '_error');
   if (!codeEl || !chartEl) return;
   if (chartEl.style.display === 'none') {
     chartEl.style.display = 'block';
     codeEl.style.display = 'none';
-    if (typeof mermaid !== 'undefined' && chartEl.querySelector('.mermaid')) {
-      mermaid.run({nodes: chartEl.querySelectorAll('.mermaid')});
+    if (errorEl) errorEl.style.display = 'none';
+    if (typeof mermaid !== 'undefined') {
+      const mermaidEl = document.getElementById(id + '_mermaid');
+      if (mermaidEl) {
+        try {
+          mermaid.run({nodes: [mermaidEl]}).catch(function(err) {
+            console.warn('Mermaid render error:', err);
+            if (errorEl) {
+              errorEl.style.display = 'block';
+              errorEl.innerHTML = '<div style="padding:8px;color:var(--red);font-size:12px">⚠️ 图表渲染失败：语法不兼容或格式错误<br>请点击"切换代码/图表"查看源代码</div>';
+            }
+          });
+        } catch(e) {
+          if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.innerHTML = '<div style="padding:8px;color:var(--red);font-size:12px">⚠️ 图表渲染失败：语法不兼容或格式错误<br>请点击"切换代码/图表"查看源代码</div>';
+          }
+        }
+      }
     }
   } else {
     chartEl.style.display = 'none';
     codeEl.style.display = 'block';
+    if (errorEl) errorEl.style.display = 'none';
   }
 }
 
