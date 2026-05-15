@@ -119,6 +119,282 @@ async def start_podcast_generation(topic: str, conversation_id: str = "0", file_
     }
 
 
+async def _run_podcast_via_browser(task_id: str, topic: str, conversation_id: str, account: dict, file_info: dict = None):
+    try:
+        from exporter import _get_valid_account, _launch_browser, _create_context
+
+        cookie_str = account.get('cookie', CONFIG.get('cookie', ''))
+        logger.info(f"[Podcast] Starting browser-based generation: topic={topic}, task_id={task_id}")
+
+        browser = await _launch_browser()
+        context = await _create_context(browser, cookie_str)
+        page = await context.new_page()
+
+        full_text = ""
+        episode_id = None
+        audio_url = None
+        cover_url = None
+        title = None
+        duration = None
+        real_conv_id = conversation_id
+        found_audio = False
+
+        async def capture_api(route):
+            nonlocal full_text, episode_id, audio_url, cover_url, title, duration, real_conv_id, found_audio
+            url = route.request.url
+            response = await route.fetch()
+
+            if '/samantha/chat/completion' in url:
+                try:
+                    body = await response.text()
+                    for line in body.split('\n'):
+                        line = line.strip()
+                        if not line or not line.startswith('data:'):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == '[DONE]':
+                            break
+                        try:
+                            outer = json.loads(data_str)
+                            event_type = outer.get("event_type")
+                            event_data_raw = outer.get("event_data", "")
+                            if isinstance(event_data_raw, str) and event_data_raw:
+                                try:
+                                    event_data = json.loads(event_data_raw)
+                                except:
+                                    event_data = {}
+                            else:
+                                event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
+
+                            if event_type == 2001:
+                                msg = event_data.get("message", {})
+                                ct = msg.get("content_type")
+                                raw_content = msg.get("content", "")
+                                if ct in (10000, 2001) and isinstance(raw_content, str):
+                                    try:
+                                        parsed = json.loads(raw_content)
+                                        text = parsed.get("text", "")
+                                        if text:
+                                            full_text += text
+                                    except:
+                                        if raw_content:
+                                            full_text += raw_content
+                                conv_id = event_data.get("conversation_id")
+                                if conv_id:
+                                    real_conv_id = conv_id
+
+                            if event_type == 2003:
+                                content_obj = event_data.get("content_obj", {})
+                                podcast_data = content_obj.get("podcast")
+                                if podcast_data:
+                                    episode_id = podcast_data.get("id")
+                                    title = podcast_data.get("podcast_title") or podcast_data.get("title")
+                                    meta = podcast_data.get("meta", {})
+                                    cover_url = meta.get("podcast_cover_thumbnail")
+                                    playback = meta.get("playback_model", {})
+                                    audio_link = playback.get("audio_link")
+                                    if audio_link:
+                                        audio_url = audio_link
+                                        found_audio = True
+                                    dur = playback.get("duration")
+                                    if dur:
+                                        try:
+                                            duration = int(dur)
+                                        except:
+                                            duration = None
+                                    logger.info(f"[Podcast] Browser: found podcast data, episode_id={episode_id}, audio={'yes' if audio_link else 'no'}")
+
+                                widget_data_str = content_obj.get("widget_data")
+                                if widget_data_str and not episode_id:
+                                    try:
+                                        widget_data = json.loads(widget_data_str) if isinstance(widget_data_str, str) else widget_data_str
+                                        data_section = widget_data.get("data", {})
+                                        if isinstance(data_section, str):
+                                            data_section = json.loads(data_section)
+                                        episode_list = data_section.get("episodeList", {})
+                                        episodes = episode_list.get("episodes", [])
+                                        if episodes:
+                                            ep = episodes[0]
+                                            episode_id = ep.get("id")
+                                            title = ep.get("podcast_title") or ep.get("title")
+                                            meta = ep.get("meta", {})
+                                            cover_url = meta.get("podcast_cover_thumbnail")
+                                            playback = meta.get("playback_model", {})
+                                            audio_link = playback.get("audio_link")
+                                            if audio_link:
+                                                audio_url = audio_link
+                                                found_audio = True
+                                            dur = playback.get("duration")
+                                            if dur:
+                                                try:
+                                                    duration = int(dur)
+                                                except:
+                                                    duration = None
+                                    except Exception as e:
+                                        logger.warning(f"[Podcast] Browser: widget parse error: {e}")
+
+                        except json.JSONDecodeError:
+                            pass
+                except:
+                    pass
+
+            if '/api/doubao/do_action' in url:
+                try:
+                    body = await response.json()
+                    if body.get("code") == 0 and body.get("data", {}).get("success"):
+                        resp_data = json.loads(body["data"].get("resp", "{}"))
+                        episode = resp_data.get("episode", {})
+                        if episode:
+                            meta = episode.get("meta", {})
+                            playback = meta.get("playback_model", {})
+                            audio_link = playback.get("audio_link")
+                            if audio_link:
+                                audio_url = audio_link
+                                found_audio = True
+                                if not episode_id:
+                                    episode_id = episode.get("id")
+                                if not title:
+                                    title = episode.get("podcast_title") or episode.get("title")
+                                if not cover_url:
+                                    cover_url = meta.get("podcast_cover_thumbnail")
+                                dur = playback.get("duration")
+                                if dur:
+                                    try:
+                                        duration = int(dur)
+                                    except:
+                                        duration = None
+                                logger.info(f"[Podcast] Browser: found audio via FPA API")
+                except:
+                    pass
+
+            await route.fulfill(response=response)
+
+        await page.route('**/samantha/**', capture_api)
+        await page.route('**/api/doubao/**', capture_api)
+
+        chat_url = 'https://www.doubao.com/chat/'
+        logger.info(f"[Podcast] Browser: navigating to {chat_url}")
+        await page.goto(chat_url, wait_until='domcontentloaded', timeout=30000)
+        await asyncio.sleep(3)
+
+        try:
+            podcast_tab = page.locator('text=播客').first
+            await podcast_tab.click(timeout=5000)
+            await asyncio.sleep(2)
+            logger.info(f"[Podcast] Browser: clicked podcast tab")
+        except:
+            logger.info(f"[Podcast] Browser: podcast tab not found, trying direct input")
+
+        try:
+            textarea = page.locator('textarea, [contenteditable="true"]').first
+            await textarea.click(timeout=5000)
+            await asyncio.sleep(0.5)
+            await textarea.fill(topic)
+            await asyncio.sleep(1)
+            logger.info(f"[Podcast] Browser: filled topic: {topic}")
+        except Exception as e:
+            logger.error(f"[Podcast] Browser: failed to fill textarea: {e}")
+            raise Exception(f"Failed to input podcast topic: {e}")
+
+        try:
+            send_btn = page.locator('button[class*="send"], button[aria-label*="发送"], button[aria-label*="Send"]').first
+            await send_btn.click(timeout=5000)
+            logger.info(f"[Podcast] Browser: clicked send button")
+        except:
+            try:
+                await page.keyboard.press('Enter')
+                logger.info(f"[Podcast] Browser: pressed Enter to send")
+            except:
+                pass
+
+        logger.info(f"[Podcast] Browser: waiting for script generation...")
+        for i in range(60):
+            await asyncio.sleep(3)
+            if full_text and not found_audio:
+                if i > 5:
+                    break
+            if found_audio:
+                break
+
+        logger.info(f"[Podcast] Browser: script generated, text={len(full_text)} chars, episode_id={episode_id}, audio={'yes' if found_audio else 'no'}")
+
+        if not found_audio and full_text:
+            logger.info(f"[Podcast] Browser: looking for 'generate audio' button...")
+            await asyncio.sleep(3)
+
+            try:
+                gen_audio_btn = page.locator('text=生成音频').first
+                await gen_audio_btn.click(timeout=5000)
+                logger.info(f"[Podcast] Browser: clicked 'generate audio' button")
+
+                for i in range(60):
+                    await asyncio.sleep(5)
+                    if found_audio:
+                        logger.info(f"[Podcast] Browser: audio found after clicking generate!")
+                        break
+            except:
+                logger.info(f"[Podcast] Browser: no 'generate audio' button found")
+
+            if not found_audio:
+                try:
+                    all_buttons = await page.locator('button').all()
+                    for btn in all_buttons:
+                        try:
+                            btn_text = await btn.text_content()
+                            if btn_text and any(kw in btn_text for kw in ['音频', '播放', '生成', '收听']):
+                                logger.info(f"[Podcast] Browser: found button: {btn_text}")
+                                await btn.click(timeout=3000)
+                                await asyncio.sleep(5)
+                                if found_audio:
+                                    break
+                        except:
+                            continue
+                except:
+                    pass
+
+        PODCAST_TASKS[task_id]["script"] = full_text
+        PODCAST_TASKS[task_id]["conversation_id"] = real_conv_id
+
+        if found_audio and audio_url:
+            PODCAST_TASKS[task_id]["audio_url"] = audio_url
+            PODCAST_TASKS[task_id]["duration"] = duration
+            PODCAST_TASKS[task_id]["status"] = "completed"
+            if episode_id:
+                PODCAST_TASKS[task_id]["episode_id"] = episode_id
+            if title:
+                PODCAST_TASKS[task_id]["title"] = title
+            if cover_url:
+                PODCAST_TASKS[task_id]["cover_url"] = cover_url
+            logger.info(f"[Podcast] Browser: completed with audio! task_id={task_id}")
+        elif episode_id:
+            PODCAST_TASKS[task_id]["episode_id"] = episode_id
+            if title:
+                PODCAST_TASKS[task_id]["title"] = title
+            if cover_url:
+                PODCAST_TASKS[task_id]["cover_url"] = cover_url
+            logger.info(f"[Podcast] Browser: episode found, polling for audio...")
+            await _poll_podcast_detail(task_id, episode_id, account)
+        elif full_text:
+            PODCAST_TASKS[task_id]["status"] = "script_ready"
+            PODCAST_TASKS[task_id]["title"] = topic
+            logger.info(f"[Podcast] Browser: script only, no audio. text={len(full_text)} chars")
+        else:
+            PODCAST_TASKS[task_id]["status"] = "failed"
+            PODCAST_TASKS[task_id]["error"] = "No content returned from podcast generation"
+
+        await browser.close()
+
+    except Exception as e:
+        logger.error(f"[Podcast] Browser generation failed: {e}")
+        PODCAST_TASKS[task_id]["status"] = "failed"
+        PODCAST_TASKS[task_id]["error"] = str(e)
+        try:
+            if browser:
+                await browser.close()
+        except:
+            pass
+
+
 async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str, account: dict, file_info: dict = None, _retry_count: int = 0):
     try:
         params = build_url_params(account)
