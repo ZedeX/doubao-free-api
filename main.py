@@ -2,11 +2,13 @@ import json
 import os
 import logging
 import asyncio
+import aiohttp
 from datetime import datetime
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import (
@@ -19,6 +21,8 @@ from openai_api import stream_chat_completion, non_stream_chat_completion, gener
 from anthropic_api import stream_anthropic_messages, non_stream_anthropic_messages
 from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts
 from music import start_music_generation, get_music_status, get_music_audio, get_music_lyric, list_music, get_music_styles
+from exporter import fetch_user_info, fetch_conversation_list, export_conversation_full
+from storage import init_db, save_conversation, list_conversations as db_list_conversations, get_conversation as db_get_conversation, save_message, get_messages as db_get_messages, delete_conversation as db_delete_conversation, search_conversations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("doubao-api")
@@ -38,6 +42,7 @@ async def lifespan(app: FastAPI):
             SIGN_METHOD = 'b3'
     logger.info(f"Active sign method: {SIGN_METHOD}")
     _cleanup_task = asyncio.create_task(_auto_cleanup_task())
+    await init_db()
     yield
     if _cleanup_task:
         _cleanup_task.cancel()
@@ -173,6 +178,199 @@ async def generate_images_endpoint(request: Request):
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/conversations")
+async def api_list_conversations():
+    convs = await db_list_conversations()
+    return JSONResponse(content={"conversations": convs})
+
+@app.get("/api/conversations/{conv_id}")
+async def api_get_conversation(conv_id: str):
+    conv = await db_get_conversation(conv_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    messages = await db_get_messages(conv_id)
+    return JSONResponse(content={"conversation": conv, "messages": messages})
+
+@app.post("/api/conversations")
+async def api_create_conversation(request: Request):
+    data = await request.json()
+    conv_id = data.get("id", "")
+    title = data.get("title", "")
+    model = data.get("model", "")
+    if not conv_id:
+        raise HTTPException(status_code=400, detail="id is required")
+    conv = await save_conversation(conv_id, title, model)
+    return JSONResponse(content=conv)
+
+@app.post("/api/conversations/{conv_id}/messages")
+async def api_save_message(conv_id: str, request: Request):
+    data = await request.json()
+    role = data.get("role", "")
+    content = data.get("content", "")
+    model = data.get("model", "")
+    msg_id = data.get("id", None)
+    msg = await save_message(msg_id, conv_id, role, content, model)
+    return JSONResponse(content=msg)
+
+@app.delete("/api/conversations/{conv_id}")
+async def api_delete_conversation(conv_id: str):
+    ok = await db_delete_conversation(conv_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return JSONResponse(content={"deleted": True})
+
+ALLOWED_AUDIO_DOMAINS = [
+    "douyinvod.com", "byteimg.com", "bytedance.com", "bdurl.net",
+    "bytegecko.com", "bdemc.com", "tiktokcdn.com", "volcengine.com",
+    "douyin.com", "ibytedtos.com", "bytevcloud.com", "tosv.org",
+]
+
+def _is_allowed_audio_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        return any(host == d or host.endswith("." + d) for d in ALLOWED_AUDIO_DOMAINS)
+    except Exception:
+        return False
+
+@app.get("/api/proxy/audio")
+async def proxy_audio(url: str = "", task_id: str = ""):
+    if not url and not task_id:
+        raise HTTPException(status_code=400, detail="url or task_id is required")
+    if task_id and not url:
+        from music import MUSIC_TASKS
+        task = MUSIC_TASKS.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        url = task.get("audio_url", "")
+        if not url:
+            raise HTTPException(status_code=404, detail="Audio not available")
+    elif not url:
+        raise HTTPException(status_code=400, detail="url or task_id is required")
+    
+    if url and not _is_allowed_audio_url(url):
+        raise HTTPException(status_code=403, detail="URL domain not allowed")
+    
+    media_dir = os.path.join(BASE_DIR, "media", "audio")
+    os.makedirs(media_dir, exist_ok=True)
+    
+    local_path = ""
+    if task_id:
+        task_local = os.path.join(media_dir, f"{task_id}.mp3")
+        if os.path.exists(task_local):
+            local_path = task_local
+    
+    if not local_path:
+        import hashlib
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+        hash_local = os.path.join(media_dir, f"{url_hash}.mp3")
+        if os.path.exists(hash_local):
+            local_path = hash_local
+    
+    if os.path.exists(local_path):
+        with open(local_path, "rb") as f:
+            body = f.read()
+        return Response(content=body, media_type="audio/mpeg",
+                        headers={"Content-Disposition": "inline",
+                                 "Accept-Ranges": "bytes",
+                                 "Content-Length": str(len(body)),
+                                 "Cache-Control": "public, max-age=86400"})
+    
+    account = cookie_pool.get_next()
+    cookie_str = account.get("cookie", CONFIG.get("cookie", ""))
+    req_headers = {
+        "User-Agent": "python-requests/2.31.0",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120),
+                                   headers=req_headers, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=502, detail=f"Upstream returned {resp.status}")
+                content_type = resp.headers.get("Content-Type", "audio/mpeg")
+                body = await resp.read()
+                with open(local_path, "wb") as f:
+                    f.write(body)
+                logger.info(f"Cached audio: {local_path} ({len(body)} bytes)")
+                return Response(content=body, media_type=content_type,
+                                headers={"Content-Disposition": "inline",
+                                         "Accept-Ranges": "bytes",
+                                         "Content-Length": str(len(body)),
+                                         "Cache-Control": "public, max-age=86400"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Audio proxy error: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/proxy/download/{task_id}")
+async def proxy_download_music(task_id: str):
+    from music import MUSIC_TASKS
+    task = MUSIC_TASKS.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    url = task.get("audio_url", "")
+    if not url:
+        raise HTTPException(status_code=404, detail="Audio not available")
+    title = task.get("title") or task.get("prompt", "music")
+    safe_title = "".join(c for c in title if c.isalnum() or c in " _-")[:50]
+    if not safe_title:
+        safe_title = "music"
+    filename = f"{safe_title}.mp3"
+    from urllib.parse import quote
+    encoded_filename = quote(filename)
+    
+    local_path = ""
+    task_local = os.path.join(BASE_DIR, "media", "audio", f"{task_id}.mp3")
+    if os.path.exists(task_local):
+        local_path = task_local
+    
+    if not local_path:
+        media_dir = os.path.join(BASE_DIR, "media", "audio")
+        os.makedirs(media_dir, exist_ok=True)
+        import hashlib
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+        hash_local = os.path.join(media_dir, f"{url_hash}.mp3")
+        if os.path.exists(hash_local):
+            local_path = hash_local
+    
+    if os.path.exists(local_path):
+        with open(local_path, "rb") as f:
+            body = f.read()
+        return Response(content=body, media_type="audio/mpeg",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                                 "Content-Length": str(len(body))})
+    
+    req_headers = {
+        "User-Agent": "python-requests/2.31.0",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120),
+                                   headers=req_headers, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    raise HTTPException(status_code=502, detail=f"Upstream returned {resp.status}")
+                content_type = resp.headers.get("Content-Type", "audio/mpeg")
+                body = await resp.read()
+                with open(local_path, "wb") as f:
+                    f.write(body)
+                logger.info(f"Cached audio: {local_path} ({len(body)} bytes)")
+                return Response(content=body, media_type=content_type,
+                                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                                         "Content-Length": str(len(body))})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Music download proxy error: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/conversations/search")
+async def api_search_conversations(q: str = ""):
+    convs = await search_conversations(q)
+    return JSONResponse(content={"conversations": convs})
 
 @app.get("/health")
 async def health():
@@ -324,6 +522,25 @@ async def music_list():
 async def music_styles():
     result = await get_music_styles()
     return JSONResponse(content=result)
+
+@app.get("/v1/user/info")
+async def user_info():
+    result = await fetch_user_info()
+    return JSONResponse(content=result)
+
+@app.get("/v1/doubao/conversations")
+async def doubao_conversations():
+    result = await fetch_conversation_list()
+    return JSONResponse(content={"conversations": result})
+
+@app.get("/v1/doubao/conversations/{conversation_id}/export")
+async def doubao_conversation_export(conversation_id: str):
+    try:
+        result = await export_conversation_full(conversation_id)
+        return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Conversation export failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/logs/today")
 async def get_today_logs():

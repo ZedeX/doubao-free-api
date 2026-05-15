@@ -3,6 +3,10 @@ import uuid
 import time
 import asyncio
 import logging
+import base64
+import os
+import subprocess
+import sys
 from typing import Optional
 
 import aiohttp
@@ -17,103 +21,142 @@ logger = logging.getLogger("doubao-api")
 
 MUSIC_TASKS = {}
 
+MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media", "audio")
+
+
+async def _download_audio_to_local(task_id: str, audio_url: str, account: dict):
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        local_path = os.path.join(MEDIA_DIR, f"{task_id}.mp3")
+        if os.path.exists(local_path):
+            MUSIC_TASKS[task_id]["local_audio_path"] = local_path
+            logger.info(f"[Music] Audio already cached: {local_path}")
+            return
+        headers = {
+            "User-Agent": "python-requests/2.31.0",
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=120),
+                                   headers=headers, allow_redirects=True) as resp:
+                if resp.status == 200:
+                    body = await resp.read()
+                    with open(local_path, "wb") as f:
+                        f.write(body)
+                    MUSIC_TASKS[task_id]["local_audio_path"] = local_path
+                    logger.info(f"[Music] Downloaded audio: {local_path} ({len(body)} bytes)")
+                else:
+                    logger.warning(f"[Music] Failed to download audio: HTTP {resp.status}")
+    except Exception as e:
+        logger.error(f"[Music] Error downloading audio: {e}")
+
 MUSIC_STYLES = ["流行", "嘻哈", "国风", "DJ", "摇滚", "民谣", "R&B", "雷鬼", "朋克", "电音", "爵士"]
 MUSIC_MOODS = ["快乐", "放松", "活力", "兴奋", "忧郁", "鼓舞", "伤感", "怀旧", "浪漫"]
 MUSIC_VOICES = ["女声", "男声"]
+
+PW_LOCK = asyncio.Lock()
 
 
 def build_music_request_body(prompt: str, conversation_id: str = "0",
                               style: str = "", mood: str = "", voice: str = "",
                               lyric: str = ""):
-    parts = []
-    if lyric:
-        parts.append(f"歌词如下：\n{lyric}")
-    else:
-        parts.append(f"请帮我生成一首关于「{prompt}」的歌曲")
-
-    if style:
-        parts.append(f"风格：{style}")
-    if mood:
-        parts.append(f"情绪：{mood}")
-    if voice:
-        parts.append(f"音色：{voice}")
-
-    text = "，".join(parts) if not lyric else parts[0]
+    text = prompt if prompt else "我想创作一首歌曲"
+    if style or mood or voice:
+        parts = ["我想创作一首歌曲，用AI 帮我写歌词。"]
+        if style:
+            parts.append(f"这首歌是{style}音乐风格，")
+        if mood:
+            parts.append(f"传达{mood}的情绪，")
+        if voice:
+            parts.append(f"使用{voice} 音色。")
+        text = "".join(parts).rstrip("，") + "。"
 
     body = {
-        "bot_id": "7338286299411103781",
-        "completion_option": {
-            "is_regen": False,
-            "with_suggest": False,
-            "need_create_conversation": conversation_id == "0",
-            "launch_stage": 1,
-            "use_auto_cot": False,
-            "use_deep_think": False
-        },
-        "conversation_id": conversation_id,
-        "local_conversation_id": f"local_{uuid.uuid4().int % 10000000000000000}",
-        "local_message_id": str(uuid.uuid4()),
         "messages": [{
             "content": json.dumps({
                 "text": text,
-                "intention": "MusicAssistant"
+                "lyric": lyric if lyric else "",
+                "theme": style or "",
+                "mood": mood or "",
+                "genre": style or "",
+                "gender": voice or "",
+                "generation_type": ""
             }, ensure_ascii=False),
-            "content_type": 2001,
-            "attachments": [],
-            "references": []
+            "content_type": 2005
         }],
-        "ext": {
-            "fp": CONFIG.get('fp', ''),
-            "input_skill": json.dumps({
-                "skill_id": "MusicAssistant",
-                "skill_type": "MusicAssistant"
-            })
-        }
+        "completion_option": {
+            "is_regen": False,
+            "with_suggest": True,
+            "need_create_conversation": conversation_id == "0",
+            "launch_stage": 1,
+            "is_replace": False,
+            "is_delete": False,
+            "is_ai_playground": False,
+            "message_from": 0,
+            "action_bar_skill_id": 9,
+            "use_auto_cot": False,
+            "resend_for_regen": False,
+            "enable_commerce_credit": False,
+            "event_id": "0"
+        },
+        "evaluate_option": {
+            "web_ab_params": ""
+        },
+        "conversation_id": conversation_id,
+        "local_conversation_id": f"local_{uuid.uuid4().int % 10000000000000000}",
+        "local_message_id": str(uuid.uuid4())
     }
     return body
 
 
-async def call_fpa_music_api(api_name: str, params: dict, account: dict):
-    url = f"{CONFIG['api_base']}/api/doubao/do_action_v2"
-    uid = ""
+def _decode_base64_url(b64_str: str) -> str:
     try:
-        cookie = account.get('cookie', CONFIG.get('cookie', ''))
-        for part in cookie.split(';'):
-            part = part.strip()
-            if part.startswith('uid_tt='):
-                uid = part.split('=', 1)[1]
-                break
+        return base64.b64decode(b64_str).decode('utf-8')
     except Exception:
-        pass
+        return b64_str
 
-    payload = {
-        "scene": "FPA_Music",
-        "payload": json.dumps({
-            "api_name": api_name,
-            "params": json.dumps(params)
-        })
+
+def _extract_music_from_content(ct_content: dict):
+    result = {
+        "title": None, "lyric": None, "audio_url": None,
+        "cover_url": None, "duration": None, "vid": None
     }
 
-    headers = {
-        'content-type': 'application/json',
-        'cookie': account.get('cookie', CONFIG.get('cookie', '')),
-        'origin': 'https://www.doubao.com',
-        'referer': 'https://www.doubao.com/chat/music',
-        'user-agent': USER_AGENT,
-        'x-flow-trace': generate_x_flow_trace()
-    }
+    tasks = ct_content.get("tasks", {})
+    if isinstance(tasks, dict):
+        for key, task in tasks.items():
+            if isinstance(task, dict):
+                result["title"] = task.get("title")
+                result["lyric"] = task.get("lyric")
+                result["vid"] = task.get("vid")
 
-    query_params = {}
-    if uid:
-        query_params["uid"] = uid
+                cover = task.get("cover", {})
+                if cover:
+                    image_ori = cover.get("image_ori", {})
+                    image_thumb = cover.get("image_thumb", {})
+                    result["cover_url"] = (image_ori or image_thumb).get("url", "")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers, params=query_params,
-                                timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            data = await resp.json()
-            if data.get("code") != 0 or not data.get("data", {}).get("resp"):
-                raise Exception(f"FPA Music API failed: {json.dumps(data, ensure_ascii=False)[:300]}")
-            return json.loads(data["data"]["resp"])
+                video_model_str = task.get("video_model")
+                if video_model_str:
+                    try:
+                        if isinstance(video_model_str, str):
+                            video_model = json.loads(video_model_str)
+                        else:
+                            video_model = video_model_str
+
+                        result["duration"] = video_model.get("video_duration")
+
+                        video_list = video_model.get("video_list", {})
+                        for vkey, vdata in video_list.items():
+                            main_url_b64 = vdata.get("main_url", "")
+                            if main_url_b64:
+                                result["audio_url"] = _decode_base64_url(main_url_b64)
+                                break
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        logger.warning(f"[Music] Failed to parse video_model: {e}")
+
+                break
+
+    return result
 
 
 async def start_music_generation(prompt: str, conversation_id: str = "0",
@@ -161,173 +204,368 @@ async def _run_music_generation(task_id: str, prompt: str, conversation_id: str,
                                  account: dict, style: str = "", mood: str = "",
                                  voice: str = "", lyric: str = ""):
     try:
-        params = build_url_params(account)
-        url = f"{CONFIG['api_base']}/samantha/chat/completion?{params}"
-        headers = build_headers(account)
-        body = build_music_request_body(prompt, conversation_id, style, mood, voice, lyric)
+        await _run_music_generation_api(task_id, prompt, conversation_id, account, style, mood, voice, lyric)
+        task = MUSIC_TASKS.get(task_id)
+        if task and task["status"] == "failed" and "No content returned" in (task.get("error") or ""):
+            cookie_pool.report_fail(account, "Empty SSE response")
+            next_account = cookie_pool.get_next()
+            if next_account.get("cookie") != account.get("cookie"):
+                logger.info(f"[Music] Retrying with account: {next_account.get('name', 'unknown')}")
+                MUSIC_TASKS[task_id]["status"] = "generating"
+                MUSIC_TASKS[task_id]["error"] = None
+                await _run_music_generation_api(task_id, prompt, conversation_id, next_account, style, mood, voice, lyric)
+                task = MUSIC_TASKS.get(task_id)
+                if task and task["status"] == "completed":
+                    cookie_pool.report_success(next_account)
+                elif task and task["status"] == "failed":
+                    cookie_pool.report_fail(next_account, task.get("error", ""))
+            else:
+                logger.info("[Music] No alternative account available, trying Playwright")
+                try:
+                    MUSIC_TASKS[task_id]["status"] = "generating"
+                    MUSIC_TASKS[task_id]["error"] = None
+                    await _run_music_generation_playwright(task_id, prompt, style, mood, voice, lyric)
+                except Exception as pw_err:
+                    logger.error(f"[Music] Playwright fallback also failed: {pw_err}")
+                    MUSIC_TASKS[task_id]["status"] = "failed"
+                    MUSIC_TASKS[task_id]["error"] = f"API empty response; Playwright: {str(pw_err)}"
+    except Exception as e:
+        err_str = str(e)
+        cookie_pool.report_fail(account, err_str)
+        if "rate limited" in err_str or "block" in err_str or "710022" in err_str:
+            logger.info(f"[Music] API rate limited, trying next account or Playwright: {e}")
+            next_account = cookie_pool.get_next()
+            if next_account.get("cookie") != account.get("cookie"):
+                try:
+                    MUSIC_TASKS[task_id]["status"] = "generating"
+                    MUSIC_TASKS[task_id]["error"] = None
+                    await _run_music_generation_api(task_id, prompt, conversation_id, next_account, style, mood, voice, lyric)
+                    task = MUSIC_TASKS.get(task_id)
+                    if task and task["status"] == "completed":
+                        cookie_pool.report_success(next_account)
+                except Exception as e2:
+                    cookie_pool.report_fail(next_account, str(e2))
+                    MUSIC_TASKS[task_id]["status"] = "failed"
+                    MUSIC_TASKS[task_id]["error"] = f"API: {err_str}; Retry: {str(e2)}"
+            else:
+                try:
+                    MUSIC_TASKS[task_id]["status"] = "generating"
+                    MUSIC_TASKS[task_id]["error"] = None
+                    await _run_music_generation_playwright(task_id, prompt, style, mood, voice, lyric)
+                except Exception as pw_err:
+                    logger.error(f"[Music] Playwright fallback also failed: {pw_err}")
+                    MUSIC_TASKS[task_id]["status"] = "failed"
+                    MUSIC_TASKS[task_id]["error"] = f"API: {err_str}; Playwright: {str(pw_err)}"
+        else:
+            logger.error(f"[Music] Generation failed: {e}")
+            MUSIC_TASKS[task_id]["status"] = "failed"
+            MUSIC_TASKS[task_id]["error"] = str(e)
 
-        logger.info(f"[Music] Starting generation: prompt={prompt}, task_id={task_id}")
+
+async def _run_music_generation_api(task_id: str, prompt: str, conversation_id: str,
+                                     account: dict, style: str = "", mood: str = "",
+                                     voice: str = "", lyric: str = ""):
+    params = build_url_params(account)
+    url = f"{CONFIG['api_base']}/samantha/chat/completion?{params}"
+    headers = build_headers(account)
+    headers['referer'] = 'https://www.doubao.com/chat/music'
+    body = build_music_request_body(prompt, conversation_id, style, mood, voice, lyric)
+
+    logger.info(f"[Music] Starting generation via API: prompt={prompt}, task_id={task_id}")
+
+    full_text = ""
+    audio_url = None
+    cover_url = None
+    title = None
+    duration = None
+    vid = None
+    real_conv_id = conversation_id
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=body, headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=300)) as resp:
+            if resp.status != 200:
+                err_text = await resp.text()
+                raise Exception(f"Samantha API returned {resp.status}: {err_text[:300]}")
+
+            async for raw_line in resp.content:
+                try:
+                    line = raw_line.decode('utf-8', errors='replace').strip()
+                except:
+                    continue
+
+                if not line:
+                    continue
+
+                if line.startswith('data:'):
+                    data_str = line[5:].strip()
+                    if data_str == '[DONE]':
+                        break
+                    try:
+                        outer = json.loads(data_str)
+                        event_type = outer.get("event_type")
+                        event_data_raw = outer.get("event_data", "")
+
+                        if isinstance(event_data_raw, str) and event_data_raw:
+                            try:
+                                event_data = json.loads(event_data_raw)
+                            except json.JSONDecodeError:
+                                event_data = {}
+                        else:
+                            event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
+
+                        conv_id = event_data.get("conversation_id")
+                        if conv_id:
+                            real_conv_id = conv_id
+
+                        if event_type == 2001:
+                            msg = event_data.get("message", {})
+                            ct = msg.get("content_type")
+                            raw_content = msg.get("content", "")
+
+                            if ct == 2006 and isinstance(raw_content, str):
+                                try:
+                                    ct_content = json.loads(raw_content)
+                                    extracted = _extract_music_from_content(ct_content)
+                                    if extracted.get("title"):
+                                        title = extracted["title"]
+                                    if extracted.get("lyric"):
+                                        full_text = extracted["lyric"]
+                                    if extracted.get("audio_url"):
+                                        audio_url = extracted["audio_url"]
+                                    if extracted.get("cover_url"):
+                                        cover_url = extracted["cover_url"]
+                                    if extracted.get("duration"):
+                                        try:
+                                            duration = int(float(extracted["duration"]))
+                                        except:
+                                            duration = None
+                                    if extracted.get("vid"):
+                                        vid = extracted["vid"]
+                                    logger.info(f"[Music] ct=2006: title={title}, has_audio={bool(audio_url)}, vid={vid}")
+                                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                                    logger.warning(f"[Music] Failed to parse ct=2006: {e}")
+
+                            elif ct in (10000, 2001) and isinstance(raw_content, str):
+                                try:
+                                    parsed = json.loads(raw_content)
+                                    text = parsed.get("text", "")
+                                    if text:
+                                        full_text += text
+                                except json.JSONDecodeError:
+                                    if raw_content:
+                                        full_text += raw_content
+
+                            elif ct not in (10000, 2001, 2006):
+                                logger.info(f"[Music] Unknown content_type={ct}: {str(raw_content)[:200]}")
+
+                        elif event_type == 2005:
+                            error_msg = event_data.get("message", "")
+                            error_code = event_data.get("code", "")
+                            logger.error(f"[Music] Error 2005: code={error_code} msg={error_msg}")
+                            raise Exception(f"Music generation error: code={error_code} msg={error_msg}")
+
+                    except json.JSONDecodeError:
+                        pass
+
+    MUSIC_TASKS[task_id]["generated_lyric"] = full_text
+    MUSIC_TASKS[task_id]["conversation_id"] = real_conv_id
+    MUSIC_TASKS[task_id]["title"] = title
+    MUSIC_TASKS[task_id]["cover_url"] = cover_url
+
+    if audio_url:
+        MUSIC_TASKS[task_id]["audio_url"] = audio_url
+        MUSIC_TASKS[task_id]["duration"] = duration
+        MUSIC_TASKS[task_id]["vid"] = vid
+        MUSIC_TASKS[task_id]["status"] = "completed"
+        logger.info(f"[Music] Generation completed: task_id={task_id}, title={title}, duration={duration}s")
+        asyncio.create_task(_download_audio_to_local(task_id, audio_url, account))
+    elif full_text:
+        MUSIC_TASKS[task_id]["status"] = "lyrics_ready"
+        logger.info(f"[Music] Lyrics generated but no audio yet. Lyrics length: {len(full_text)}")
+    else:
+        MUSIC_TASKS[task_id]["status"] = "failed"
+        MUSIC_TASKS[task_id]["error"] = "No content returned from music generation"
+
+
+async def _run_music_generation_playwright(task_id: str, prompt: str,
+                                            style: str = "", mood: str = "",
+                                            voice: str = "", lyric: str = ""):
+    async with PW_LOCK:
+        logger.info(f"[Music] Starting generation via Playwright: task_id={task_id}")
+
+        from playwright.async_api import async_playwright
+
+        cookie_str = CONFIG.get('cookie', '')
+        cookies = []
+        for part in cookie_str.split(';'):
+            part = part.strip()
+            if '=' in part:
+                name, value = part.split('=', 1)
+                cookies.append({
+                    'name': name.strip(),
+                    'value': value.strip(),
+                    'domain': '.doubao.com',
+                    'path': '/'
+                })
+
+        text = prompt if prompt else "我想创作一首歌曲"
+        if style or mood or voice:
+            text = f"我想创作一首歌曲，用AI 帮我写歌词。这首歌是{style or '流行'}音乐风格，传达{mood or '快乐'}的情绪，使用{voice or '女声'} 音色。"
+
+        sse_response_body = None
+
+        try:
+            from cloakbrowser import async_launch
+            browser = await async_launch(headless=True, humanize=True)
+            logger.info("[Music] Using CloakBrowser for stealth browsing")
+        except ImportError:
+            from playwright.async_api import async_playwright
+            pw = await async_playwright().start()
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            logger.info("[Music] CloakBrowser not available, using Playwright")
+
+        context = await browser.new_context(
+            viewport={'width': 1280, 'height': 900},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
+        )
+        await context.add_cookies(cookies)
+
+        page = await context.new_page()
+
+        async def handle_sse(route):
+            nonlocal sse_response_body
+            response = await route.fetch()
+            body = await response.text()
+            sse_response_body = body
+            logger.info(f"[Music-PW] SSE captured: {len(body)} chars")
+            await route.fulfill(response=response)
+
+        await page.route('**/samantha/chat/completion**', handle_sse)
+
+        await page.goto('https://www.doubao.com/chat/music', wait_until='domcontentloaded', timeout=60000)
+        await asyncio.sleep(8)
+
+        current_url = page.url
+        if 'login' in current_url.lower() or 'passport' in current_url.lower():
+            await browser.close()
+            raise Exception("Need login in Playwright session")
+
+        textarea = await page.query_selector('[contenteditable="true"]')
+        if not textarea:
+            textarea = await page.query_selector('textarea')
+        if not textarea:
+            await browser.close()
+            raise Exception("No input found in Playwright session")
+
+        await textarea.click()
+        await asyncio.sleep(0.5)
+        await textarea.fill(text)
+        await asyncio.sleep(1)
+
+        send_btn = None
+        for selector in ['[class*="send"]', 'button[type="submit"]']:
+            send_btn = await page.query_selector(selector)
+            if send_btn:
+                is_visible = await send_btn.is_visible()
+                if is_visible:
+                    break
+                send_btn = None
+
+        if send_btn:
+            await send_btn.click()
+        else:
+            await textarea.press('Enter')
+
+        logger.info(f"[Music-PW] Message sent, waiting for SSE...")
+
+        for i in range(60):
+            await asyncio.sleep(3)
+            if sse_response_body:
+                break
+
+        await browser.close()
+
+        if not sse_response_body:
+            raise Exception("No SSE response captured via Playwright")
 
         full_text = ""
-        music_id = None
         audio_url = None
         cover_url = None
         title = None
         duration = None
-        real_conv_id = conversation_id
+        vid = None
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body, headers=headers,
-                                    timeout=aiohttp.ClientTimeout(total=180)) as resp:
-                if resp.status != 200:
-                    err_text = await resp.text()
-                    raise Exception(f"Samantha API returned {resp.status}: {err_text[:300]}")
+        for line in sse_response_body.split('\n'):
+            line = line.strip()
+            if not line.startswith('data:'):
+                continue
+            data_str = line[5:].strip()
+            if data_str == '[DONE]':
+                break
+            try:
+                outer = json.loads(data_str)
+                et = outer.get("event_type")
+                ed_raw = outer.get("event_data", "")
+                ed = json.loads(ed_raw) if isinstance(ed_raw, str) and ed_raw else (ed_raw if isinstance(ed_raw, dict) else {})
 
-                async for raw_line in resp.content:
-                    try:
-                        line = raw_line.decode('utf-8', errors='replace').strip()
-                    except:
-                        continue
-
-                    if not line:
-                        continue
-
-                    if line.startswith('data:'):
-                        data_str = line[5:].strip()
-                        if data_str == '[DONE]':
-                            break
+                if et == 2001:
+                    msg = ed.get("message", {})
+                    ct = msg.get("content_type")
+                    raw_content = msg.get("content", "")
+                    if ct == 2006 and isinstance(raw_content, str):
+                        ct_content = json.loads(raw_content)
+                        extracted = _extract_music_from_content(ct_content)
+                        if extracted.get("title"):
+                            title = extracted["title"]
+                        if extracted.get("lyric"):
+                            full_text = extracted["lyric"]
+                        if extracted.get("audio_url"):
+                            audio_url = extracted["audio_url"]
+                        if extracted.get("cover_url"):
+                            cover_url = extracted["cover_url"]
+                        if extracted.get("duration"):
+                            try:
+                                duration = int(float(extracted["duration"]))
+                            except:
+                                duration = None
+                        if extracted.get("vid"):
+                            vid = extracted["vid"]
+                    elif ct in (10000, 2001) and isinstance(raw_content, str):
                         try:
-                            outer = json.loads(data_str)
-                            event_type = outer.get("event_type")
-                            event_data_raw = outer.get("event_data", "")
-
-                            if isinstance(event_data_raw, str) and event_data_raw:
-                                try:
-                                    event_data = json.loads(event_data_raw)
-                                except json.JSONDecodeError:
-                                    event_data = {}
-                            else:
-                                event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
-
-                            if event_type == 2001:
-                                msg = event_data.get("message", {})
-                                ct = msg.get("content_type")
-                                raw_content = msg.get("content", "")
-
-                                if ct in (10000, 2001) and isinstance(raw_content, str):
-                                    try:
-                                        parsed = json.loads(raw_content)
-                                        text = parsed.get("text", "")
-                                        if text:
-                                            full_text += text
-                                    except json.JSONDecodeError:
-                                        if raw_content:
-                                            full_text += raw_content
-
-                                elif ct not in (10000, 2001):
-                                    logger.info(f"[Music] Found content_type={ct}: {str(raw_content)[:200]}")
-                                    try:
-                                        ct_content = json.loads(raw_content) if isinstance(raw_content, str) else raw_content
-                                        music_data = ct_content.get("music", ct_content.get("music_card", {}))
-                                        if music_data:
-                                            music_id = music_data.get("id")
-                                            title = music_data.get("title") or music_data.get("music_title")
-                                            meta = music_data.get("meta", {})
-                                            cover_url = meta.get("music_cover_thumbnail") or meta.get("cover_url")
-                                            playback = meta.get("playback_model", {})
-                                            audio_url = playback.get("audio_link")
-                                            dur = playback.get("duration")
-                                            if dur:
-                                                try:
-                                                    duration = int(dur)
-                                                except:
-                                                    duration = None
-                                            logger.info(f"[Music] Found music data: music_id={music_id}")
-                                    except (json.JSONDecodeError, KeyError, TypeError) as e:
-                                        logger.warning(f"[Music] Failed to parse music content: {e}")
-
-                                conv_id = event_data.get("conversation_id")
-                                if conv_id:
-                                    real_conv_id = conv_id
-
-                            if event_type == 2003:
-                                content_obj = event_data.get("content_obj", {})
-                                music_data = content_obj.get("music", content_obj.get("music_card"))
-                                if music_data:
-                                    music_id = music_data.get("id")
-                                    title = music_data.get("title") or music_data.get("music_title")
-                                    meta = music_data.get("meta", {})
-                                    cover_url = meta.get("music_cover_thumbnail") or meta.get("cover_url")
-                                    playback = meta.get("playback_model", {})
-                                    audio_url = playback.get("audio_link")
-                                    dur = playback.get("duration")
-                                    if dur:
-                                        try:
-                                            duration = int(dur)
-                                        except:
-                                            duration = None
-                                    logger.info(f"[Music] Found music in content_obj: music_id={music_id}")
-
-                        except json.JSONDecodeError:
+                            parsed = json.loads(raw_content)
+                            text_chunk = parsed.get("text", "")
+                            if text_chunk:
+                                full_text += text_chunk
+                        except:
                             pass
+                elif et == 2005:
+                    error_code = ed.get("code", "")
+                    error_msg = ed.get("message", "")
+                    raise Exception(f"Playwright music error: code={error_code} msg={error_msg}")
+            except json.JSONDecodeError:
+                pass
 
         MUSIC_TASKS[task_id]["generated_lyric"] = full_text
-        MUSIC_TASKS[task_id]["conversation_id"] = real_conv_id
+        MUSIC_TASKS[task_id]["title"] = title
+        MUSIC_TASKS[task_id]["cover_url"] = cover_url
 
-        if music_id:
-            MUSIC_TASKS[task_id]["music_id"] = music_id
-            MUSIC_TASKS[task_id]["title"] = title
-            MUSIC_TASKS[task_id]["cover_url"] = cover_url
-
-            if not audio_url:
-                logger.info(f"[Music] No audio_url in SSE, polling for detail...")
-                await _poll_music_detail(task_id, music_id, account)
-            else:
-                MUSIC_TASKS[task_id]["audio_url"] = audio_url
-                MUSIC_TASKS[task_id]["duration"] = duration
-                MUSIC_TASKS[task_id]["status"] = "completed"
-                logger.info(f"[Music] Generation completed: task_id={task_id}")
+        if audio_url:
+            MUSIC_TASKS[task_id]["audio_url"] = audio_url
+            MUSIC_TASKS[task_id]["duration"] = duration
+            MUSIC_TASKS[task_id]["vid"] = vid
+            MUSIC_TASKS[task_id]["status"] = "completed"
+            logger.info(f"[Music-PW] Completed: task_id={task_id}, title={title}, duration={duration}s")
+            account = {"cookie": cookie_str}
+            asyncio.create_task(_download_audio_to_local(task_id, audio_url, account))
+        elif full_text:
+            MUSIC_TASKS[task_id]["status"] = "lyrics_ready"
         else:
-            if full_text:
-                MUSIC_TASKS[task_id]["status"] = "lyrics_ready"
-                MUSIC_TASKS[task_id]["title"] = prompt
-                logger.info(f"[Music] Lyrics generated but no music card. Lyrics length: {len(full_text)}")
-            else:
-                MUSIC_TASKS[task_id]["status"] = "failed"
-                MUSIC_TASKS[task_id]["error"] = "No content returned from music generation"
-
-    except Exception as e:
-        logger.error(f"[Music] Generation failed: {e}")
-        MUSIC_TASKS[task_id]["status"] = "failed"
-        MUSIC_TASKS[task_id]["error"] = str(e)
-
-
-async def _poll_music_detail(task_id: str, music_id: str, account: dict, max_retries: int = 30):
-    for i in range(max_retries):
-        try:
-            result = await call_fpa_music_api("GetGenMusicDetail", {"id": music_id}, account)
-
-            music = result.get("music", result.get("episode", {}))
-            meta = music.get("meta", {})
-            playback = meta.get("playback_model", {})
-
-            audio_link = playback.get("audio_link")
-            if audio_link:
-                MUSIC_TASKS[task_id]["audio_url"] = audio_link
-                MUSIC_TASKS[task_id]["duration"] = int(playback.get("duration", 0)) if playback.get("duration") else None
-                MUSIC_TASKS[task_id]["cover_url"] = meta.get("music_cover_thumbnail") or meta.get("cover_url")
-                MUSIC_TASKS[task_id]["title"] = music.get("title") or music.get("music_title")
-                MUSIC_TASKS[task_id]["status"] = "completed"
-                logger.info(f"[Music] Polling completed: task_id={task_id}")
-                return
-
-            await asyncio.sleep(3)
-        except Exception as e:
-            logger.warning(f"[Music] Poll attempt {i+1} failed: {e}")
-            await asyncio.sleep(3)
-
-    MUSIC_TASKS[task_id]["status"] = "lyrics_ready"
-    MUSIC_TASKS[task_id]["error"] = "Audio polling timed out, but lyrics are available"
+            MUSIC_TASKS[task_id]["status"] = "failed"
+            MUSIC_TASKS[task_id]["error"] = "No music content in Playwright SSE response"
 
 
 async def get_music_status(task_id: str):
@@ -342,7 +580,6 @@ async def get_music_status(task_id: str):
         "style": task.get("style"),
         "mood": task.get("mood"),
         "voice": task.get("voice"),
-        "music_id": task.get("music_id"),
         "title": task.get("title"),
         "cover_url": task.get("cover_url"),
         "audio_url": task.get("audio_url"),
@@ -374,38 +611,17 @@ async def get_music_audio(task_id: str):
     if task["status"] not in ("completed", "lyrics_ready"):
         return {"error": f"Music not ready, current status: {task['status']}"}
 
-    music_id = task.get("music_id")
     audio_url = task.get("audio_url")
-
     if audio_url:
         return {
             "task_id": task_id,
-            "music_id": music_id,
             "audio_url": audio_url,
             "title": task.get("title"),
             "duration": task.get("duration"),
             "cover_url": task.get("cover_url")
         }
 
-    if music_id:
-        try:
-            account = task.get("account", cookie_pool.get_next())
-            result = await call_fpa_music_api("GetGenMusicUrl", {"music_id": music_id}, account)
-            url = result.get("audio_url") or result.get("url")
-            if url:
-                task["audio_url"] = url
-                return {
-                    "task_id": task_id,
-                    "music_id": music_id,
-                    "audio_url": url,
-                    "title": task.get("title"),
-                    "duration": task.get("duration"),
-                    "cover_url": task.get("cover_url")
-                }
-        except Exception as e:
-            pass
-
-    return {"error": "Audio not available. Lyrics are ready but music generation requires the Doubao client."}
+    return {"error": "Audio not available yet. Music is still being generated.", "status": task["status"]}
 
 
 async def list_music():

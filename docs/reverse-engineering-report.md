@@ -1542,3 +1542,211 @@ V3.0 在 V2.0 基础上实现了三大核心功能：
 - 前端显示 thinking 内容为可折叠 `<details>` 区块
 - 前端新增 `doubao-podcast` 模型选项
 - 图片生成限流时显示"请求被限流"而非"图片生成失败"
+
+---
+
+## 15. V3.5 实施记录：音乐生成 + 对话导出 + CloakBrowser (05-15)
+
+### 15.1 音乐生成功能
+
+#### 15.1.1 逆向分析
+
+豆包音乐生成采用两阶段管线：
+
+| 阶段 | API | 说明 |
+|---|---|---|
+| 歌词生成 | `/samantha/chat/completion` (content_type=2005) | 通过 SSE 流式返回歌词 |
+| 音频合成 | 后台异步 + WebSocket 推送 (content_type=2006) | 音乐卡片包含封面、标题、时长、音频URL |
+
+**关键发现**：
+
+1. **content_type=2005** 触发音乐生成模式，豆包自动生成歌词模板
+2. **content_type=2006** 是音乐卡片推送，包含 `video_model` 字段（Base64编码的音频URL）
+3. 音频URL解码方式：`video_model.video_list.*.main_url` → Base64解码 → 实际音频URL
+4. WebSocket 地址：`wss://www.doubao.com/ws-samantha`，需 `Sec-WebSocket-Protocol: samantha`
+
+#### 15.1.2 实现架构
+
+```
+用户请求 (doubao-music)
+  → openai_api.py: _stream_music_generation()
+    → music.py: start_music_generation() [异步任务]
+      → _run_music_generation_api() [SSE歌词生成]
+        → 失败时 → _run_music_generation_playwright() [Playwright降级]
+      → WebSocket 监听音乐卡片推送
+      → 轮询音乐状态 (FPA_Music API)
+    → SSE流返回歌词 + 音乐任务ID
+  → 前端轮询 /v1/music/status/{task_id}
+  → 音乐完成后显示播放器
+```
+
+#### 15.1.3 Cookie池与故障转移
+
+音乐生成容易触发频率限制（710022错误），实现了多层故障转移：
+
+1. **主账号** → API调用
+2. **备用账号** → API调用（Cookie池轮询）
+3. **Playwright** → 浏览器自动化（最后手段）
+
+#### 15.1.4 Web界面音乐播放
+
+音乐生成完成后，Web界面显示完整的播放卡片：
+- 封面图片
+- 歌曲标题
+- 时长显示
+- HTML5 `<audio>` 播放控件
+
+### 15.2 对话导出功能
+
+#### 15.2.1 技术挑战
+
+豆包网站的API端点分为两类：
+
+| 类型 | 端点示例 | B3方案可用 | 原因 |
+|---|---|---|---|
+| 聊天补全 | `/samantha/chat/completion` | ✅ 可用 | x-flow-trace 绕过签名 |
+| 其他API | `/samantha/chat/conversation/list` | ❌ 不可用 | 需要 a_bogus 签名 |
+| 用户信息 | `/alice/profile/self` | ❌ 不可用 | 需要 a_bogus 签名 |
+
+直接调用 `/samantha/chat/conversation/list` 返回 404，调用 `/api/doubao/` 端点返回 401。
+
+#### 15.2.2 解决方案：浏览器路由拦截
+
+通过 CloakBrowser/Playwright 访问豆包网站，设置路由拦截器捕获 API 响应：
+
+```python
+async def capture_conv_list(route):
+    response = await route.fetch()  # 让浏览器正常发起请求（自动签名）
+    body = await response.json()     # 拦截响应
+    # 解析对话列表...
+    await route.fulfill(response=response)  # 返回原始响应给页面
+```
+
+**关键洞察**：浏览器发起请求时，豆包前端 JS 会自动注入 `a_bogus` 签名参数。通过 `route.fetch()` 让浏览器正常发起请求，然后拦截响应数据。
+
+#### 15.2.3 用户信息获取
+
+发现用户信息API的正确路径：
+
+| 尝试的路径 | 结果 | 说明 |
+|---|---|---|
+| `/samantha/user/info` | 404 | 不存在 |
+| `/api/doubao/user/info` | 401 | 需要签名 |
+| `/alice/profile/self` | 200 (需签名) | ✅ 正确路径 |
+
+`/alice/profile/self` 返回的数据结构：
+
+```json
+{
+  "data": {
+    "profile_brief": {
+      "nickname": "Yhq",
+      "user_name": "user_51946402306",
+      "id": 51946402306,
+      "entity_id": "7xxx",
+      "image": {
+        "tiny_url": "https://lf3-static.bytednsdoc.com/..."
+      }
+    }
+  }
+}
+```
+
+#### 15.2.4 智能账号选择
+
+实现了 `_get_valid_account()` 函数，通过解析 `sid_guard` Cookie 字段判断账号有效性：
+
+```python
+# sid_guard 格式: session_id|created_timestamp|ttl_seconds|version
+# 例如: xxx|1715731200|2592000|v1
+# 过期时间 = created_timestamp + ttl_seconds
+```
+
+优先选择 `sid_guard` 未过期的账号，避免使用已失效的 Cookie。
+
+#### 15.2.5 媒体下载
+
+导出对话时自动下载媒体文件：
+
+| 媒体类型 | 下载方式 | 存储路径 |
+|---|---|---|
+| 图片 | aiohttp 直接下载 | `exports/media/{conv_id}/{msg_id}_img0.jpg` |
+| 音频 | aiohttp 直接下载 | `exports/media/{conv_id}/{msg_id}_audio.mp3` |
+| 视频 | aiohttp 直接下载 | `exports/media/{conv_id}/{msg_id}_video.mp4` |
+
+下载完成后，JSON中的URL替换为本地路径，方便本地引用。
+
+### 15.3 CloakBrowser 集成
+
+#### 15.3.1 为什么需要 CloakBrowser
+
+Playwright 容易被反爬机制识别：
+
+| 检测维度 | Playwright | CloakBrowser |
+|---|---|---|
+| `navigator.webdriver` | `true` | `undefined` |
+| Chrome DevTools Protocol | 可检测 | 已修补 |
+| reCAPTCHA v3 得分 | 0.1-0.3 | 0.9 |
+| Cloudflare Turnstile | 被拦截 | 通过 |
+| 浏览器指纹 | 自动化特征 | 与真实用户一致 |
+
+#### 15.3.2 集成方式
+
+CloakBrowser 是 Playwright 的直接替代品，API完全兼容：
+
+```python
+# 优先使用 CloakBrowser
+try:
+    from cloakbrowser import async_launch
+    browser = await async_launch(headless=True, humanize=True)
+except ImportError:
+    from playwright.async_api import async_playwright
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(headless=True, ...)
+```
+
+`humanize=True` 启用人类行为模拟（随机延迟、自然鼠标移动等）。
+
+#### 15.3.3 应用场景
+
+| 场景 | 使用方式 |
+|---|---|
+| 用户信息获取 | CloakBrowser 访问豆包网站，拦截 `/alice/profile/self` |
+| 对话列表获取 | CloakBrowser 访问豆包网站，拦截 `/samantha/chat/conversation/list` |
+| 对话消息获取 | CloakBrowser 访问指定对话，拦截消息API |
+| 音乐生成降级 | CloakBrowser 替代 Playwright 作为最后手段 |
+
+### 15.4 Web界面改进
+
+| 改进项 | 说明 |
+|---|---|
+| Favicon | 内联SVG（紫色圆形+豆字） |
+| 用户名显示 | 侧边栏显示头像+昵称 |
+| 播客按钮移除 | 统一到模型选择标签页 |
+| 导出/导入面板 | 新增面板，含豆包对话抓取、本地导出导入、媒体任务管理 |
+| 音乐播放卡片 | 聊天界面内嵌音频播放器（封面+标题+时长+控件） |
+
+### 15.5 新增API端点
+
+| 端点 | 方法 | 功能 |
+|---|---|---|
+| `/v1/user/info` | GET | 获取当前豆包用户信息（昵称、头像、用户ID） |
+| `/v1/doubao/conversations` | GET | 获取豆包网站对话列表 |
+| `/v1/doubao/conversations/{id}/export` | GET | 导出指定对话（含媒体下载） |
+| `/v1/music/generate` | POST | 音乐生成 |
+| `/v1/music/status/{task_id}` | GET | 音乐生成状态查询 |
+| `/v1/music/audio/{task_id}` | GET | 获取音乐音频URL |
+| `/v1/music/list` | GET | 音乐任务列表 |
+| `/v1/music/styles` | GET | 音乐风格列表 |
+
+### 15.6 测试结果
+
+| 测试项 | 结果 | 备注 |
+|---|---|---|
+| 音乐生成 (doubao-music) | ✅ 通过 | 歌词+音频完整生成，Web端可播放 |
+| 用户信息获取 | ✅ 通过 | 昵称"Yhq"，头像URL正确 |
+| CloakBrowser 集成 | ✅ 通过 | 自动检测并使用，降级到Playwright正常 |
+| Cookie有效性检测 | ✅ 通过 | sid_guard过期时间解析正确 |
+| Web界面音乐播放 | ✅ 通过 | 音频播放器正常工作，封面+标题+时长显示 |
+| Favicon显示 | ✅ 通过 | 内联SVG正常渲染 |
+| 导出/导入面板 | ✅ 通过 | 面板功能完整 |

@@ -119,14 +119,15 @@ async def start_podcast_generation(topic: str, conversation_id: str = "0", file_
     }
 
 
-async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str, account: dict, file_info: dict = None):
+async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str, account: dict, file_info: dict = None, _retry_count: int = 0):
     try:
         params = build_url_params(account)
+
         url = f"{CONFIG['api_base']}/samantha/chat/completion?{params}"
         headers = build_headers(account)
         body = build_podcast_request_body(topic, conversation_id, file_info)
 
-        logger.info(f"[Podcast] Starting generation: topic={topic}, task_id={task_id}")
+        logger.info(f"[Podcast] Starting generation: topic={topic}, task_id={task_id}, account={account.get('name', 'unknown')}")
 
         full_text = ""
         episode_id = None
@@ -135,6 +136,7 @@ async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str
         title = None
         duration = None
         real_conv_id = conversation_id
+        gateway_error = None
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=180)) as resp:
@@ -142,6 +144,7 @@ async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str
                     err_text = await resp.text()
                     raise Exception(f"Samantha API returned {resp.status}: {err_text[:300]}")
 
+                line_count = 0
                 async for raw_line in resp.content:
                     try:
                         line = raw_line.decode('utf-8', errors='replace').strip()
@@ -151,10 +154,42 @@ async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str
                     if not line:
                         continue
 
+                    line_count += 1
+                    if line_count <= 5:
+                        logger.info(f"[Podcast] SSE line {line_count}: {line[:200]}")
+
+                    if line.startswith('event:'):
+                        event_name = line[6:].strip()
+                        if event_name == 'gateway-error':
+                            gateway_error = True
+                            logger.warning(f"[Podcast] Gateway error detected")
+                        continue
+
                     if line.startswith('data:'):
                         data_str = line[5:].strip()
                         if data_str == '[DONE]':
                             break
+
+                        if gateway_error:
+                            try:
+                                err_obj = json.loads(data_str)
+                                err_msg = err_obj.get("message", str(err_obj))
+                                logger.error(f"[Podcast] Gateway error details: {err_msg[:200]}")
+
+                                if "Invalid User ID" in err_msg or "user invalid" in err_msg:
+                                    if _retry_count < 2:
+                                        next_account = cookie_pool.get_next()
+                                        logger.info(f"[Podcast] Retrying with account: {next_account.get('name', 'unknown')} (attempt {_retry_count + 1})")
+                                        PODCAST_TASKS[task_id]["account"] = next_account
+                                        await _run_podcast_generation(task_id, topic, conversation_id, next_account, file_info, _retry_count + 1)
+                                        return
+                                    else:
+                                        raise Exception(f"Invalid User ID - tried {_retry_count + 1} accounts, all failed")
+                                else:
+                                    raise Exception(f"Gateway error: {err_msg[:200]}")
+                            except json.JSONDecodeError:
+                                raise Exception(f"Gateway error: {data_str[:200]}")
+
                         try:
                             outer = json.loads(data_str)
                             event_type = outer.get("event_type")
@@ -237,6 +272,7 @@ async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str
 
         PODCAST_TASKS[task_id]["script"] = full_text
         PODCAST_TASKS[task_id]["conversation_id"] = real_conv_id
+        logger.info(f"[Podcast] Stream ended: {line_count} lines, full_text={len(full_text)} chars, episode_id={episode_id}")
 
         if episode_id:
             PODCAST_TASKS[task_id]["episode_id"] = episode_id

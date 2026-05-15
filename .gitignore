@@ -9,6 +9,7 @@ accounts.json
 logs/
 conversations/
 temp/
+data/
 
 *.db
 *.sqlite
@@ -19,3 +20,18 @@ Thumbs.db
 
 .venv/
 venv/
+
+test_*.py
+check_*.py
+capture_*.py
+debug_*.py
+extract_cookie*.py
+generate_*.py
+screenshot_*.png
+*.mp3
+media/
+new_cookie.txt
+sse_response.txt
+music_result.json
+captured_music.json
+exports/
