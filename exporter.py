@@ -117,6 +117,7 @@ def _parse_im_message(msg: dict) -> Optional[dict]:
     user_type = msg.get("user_type", 1)
     message_id = msg.get("message_id", "")
     create_time = msg.get("create_time", "0")
+    content_blocks = msg.get("content_block", [])
 
     try:
         ct = int(create_time) if isinstance(create_time, str) else create_time
@@ -135,6 +136,79 @@ def _parse_im_message(msg: dict) -> Optional[dict]:
         "video_url": None,
         "raw_content": None
     }
+
+    if content_type == 9999 and content_blocks:
+        texts = []
+        thinking_text = ""
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("block_type", 0)
+            block_content = block.get("content", {})
+
+            if block_type == 10000:
+                tb = block_content.get("text_block", {})
+                t = tb.get("text", "")
+                if t:
+                    texts.append(t)
+
+            elif block_type == 10040:
+                tb = block_content.get("thinking_block", {})
+                st = tb.get("status", 0)
+                if st == 2:
+                    thinking_text = tb.get("thinking_content", "")
+                    if thinking_text and texts:
+                        texts.insert(0, f"💭 思考过程:\n{thinking_text}\n\n---\n")
+
+            elif block_type == 10052:
+                ab = block_content.get("attachment_block", {})
+                attachments = ab.get("attachments", [])
+                for att in attachments:
+                    att_type = att.get("type", 0)
+                    if att_type == 1:
+                        img_info = att.get("image", {})
+                        if isinstance(img_info, dict):
+                            img_ori = img_info.get("image_ori", {})
+                            url = img_ori.get("url", "") if isinstance(img_ori, dict) else ""
+                            if url:
+                                result["images"].append(url)
+                    elif att_type == 3:
+                        file_info = att.get("file", {})
+                        if isinstance(file_info, dict):
+                            fname = file_info.get("name", "")
+                            furi = file_info.get("uri", "")
+                            if fname:
+                                texts.append(f"📎 附件: {fname}")
+
+            elif block_type == 10056:
+                rb = block_content.get("reference_block", {})
+                ref_type = rb.get("type", 0)
+                if ref_type == 3:
+                    file_info = rb.get("file", {})
+                    if isinstance(file_info, dict):
+                        fname = file_info.get("name", "")
+                        if fname:
+                            texts.append(f"📎 引用文件: {fname}")
+                elif ref_type == 1:
+                    url_info = rb.get("url", {})
+                    if isinstance(url_info, dict):
+                        link = url_info.get("url", "")
+                        title = url_info.get("title", "")
+                        if link:
+                            texts.append(f"🔗 [{title}]({link})")
+
+            elif block_type == 2074:
+                cb = block_content.get("creation_block", block_content)
+                creations = cb.get("creations", [])
+                for creation in creations:
+                    img_raw = creation.get("image_raw", {})
+                    if isinstance(img_raw, dict):
+                        url = img_raw.get("url", "")
+                        if url:
+                            result["images"].append(url)
+
+        result["text"] = "\n".join(texts)
+        return result
 
     if isinstance(raw_content, str) and raw_content:
         try:
