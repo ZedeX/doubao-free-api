@@ -1759,7 +1759,8 @@ async function loadPodcastList() {
     let html = '<table><thead><tr><th>主题</th><th>状态</th><th>标题</th><th>时长</th><th>操作</th></tr></thead><tbody>';
     tasks.forEach(t => {
       const statusMap = {
-        generating: '<span class="badge orange">生成中</span>',
+        generating: '<span class="badge orange">生成脚本中</span>',
+        generating_audio: '<span class="badge orange">生成音频中</span>',
         script_ready: '<span class="badge blue">脚本就绪</span>',
         completed: '<span class="badge green">已完成</span>',
         failed: '<span class="badge red">失败</span>'
@@ -1770,7 +1771,7 @@ async function loadPodcastList() {
         ? `<button class="btn btn-primary btn-sm" onclick="playPodcast('${t.task_id}')">播放</button>`
         : t.status === 'script_ready'
         ? `<button class="btn btn-primary btn-sm" onclick="viewPodcastScript('${t.task_id}')">查看脚本</button>`
-        : t.status === 'generating'
+        : (t.status === 'generating' || t.status === 'generating_audio')
         ? `<button class="btn btn-sm" onclick="refreshPodcastStatus('${t.task_id}')">刷新</button>`
         : '';
       html += `<tr><td>${escHtml(t.topic)}</td><td>${statusHtml}</td><td>${escHtml(t.title || '--')}</td><td>${duration}</td><td>${actions}</td></tr>`;
@@ -1848,8 +1849,9 @@ async function viewPodcastScript(taskId) {
       scriptDiv.style.cssText = 'text-align:left;max-height:300px;overflow-y:auto;margin-top:8px;padding:10px;background:var(--main-bg);border-radius:6px;font-size:12px;line-height:1.7';
       playerCard.querySelector('.podcast-player').appendChild(scriptDiv);
     }
-    scriptDiv.innerHTML = renderMarkdown(data.script || '无脚本内容');
-    scriptDiv.style.display = 'block';
+    scriptDiv.innerHTML = renderMarkdown(data.script || '无脚本内容')
+        + `<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border);font-size:12px;color:var(--dim)">💡 在 <a href="https://www.doubao.com/chat/${data.conversation_id || ''}" target="_blank" style="color:var(--accent2)">豆包网页版</a> 中打开此对话可生成播客音频</div>`;
+      scriptDiv.style.display = 'block';
   } catch (e) {
     toast(`查看脚本失败: ${e.message}`, 'error');
   }
@@ -1860,7 +1862,7 @@ function startPodcastPolling(taskId) {
   let count = 0;
   podcastPollingTimer = setInterval(async () => {
     count++;
-    if (count > 60) { clearInterval(podcastPollingTimer); return; }
+    if (count > 80) { clearInterval(podcastPollingTimer); return; }
     try {
       const data = await api(`/v1/podcast/status/${taskId}`);
       if (data.status === 'completed') {
@@ -1869,9 +1871,10 @@ function startPodcastPolling(taskId) {
         loadPodcastList();
         playPodcast(taskId);
       } else if (data.status === 'script_ready') {
-        clearInterval(podcastPollingTimer);
-        toast('播客脚本已生成！音频需要豆包客户端触发', 'info');
-        loadPodcastList();
+          clearInterval(podcastPollingTimer);
+          toast('播客脚本已生成，可在豆包中生成音频', 'info');
+          loadPodcastList();
+          viewPodcastScript(taskId);
       } else if (data.status === 'failed') {
         clearInterval(podcastPollingTimer);
         toast(`播客生成失败: ${data.error || '未知错误'}`, 'error');

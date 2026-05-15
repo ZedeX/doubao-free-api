@@ -306,18 +306,22 @@ async def non_stream_chat_completion(request):
         import time as _time
         pod_result = await start_podcast_generation(user_input, conversation_id)
         task_id = pod_result["task_id"]
-        for _ in range(60):
+        for _ in range(80):
             await asyncio.sleep(3)
             status = await get_podcast_status(task_id)
             if status["status"] in ("completed", "script_ready", "failed"):
                 break
         pod_text = ""
         if status.get("audio_url"):
-            pod_text = f"🎙️ AI播客已生成！\n\n标题：{status.get('title', user_input)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听播客]({status['audio_url']})"
+            dur_sec = status.get('duration', 0)
+            dur_str = f"{int(dur_sec)//60}:{str(int(dur_sec)%60).zfill(2)}" if dur_sec else "--:--"
+            pod_text = f"🎙️ AI播客已生成！\n\n**{status.get('title', user_input)}**\n时长：{dur_str}\n\n🔊 [收听播客]({status['audio_url']})"
         elif status.get("script_length", 0) > 0:
             from podcast import get_podcast_script
             script = await get_podcast_script(task_id)
-            pod_text = f"🎙️ AI播客脚本已生成（音频需在豆包客户端生成）\n\n{script.get('script', '')}"
+            conv_id = status.get("conversation_id", "")
+            doubao_link = f"\n\n💡 [在豆包网页版中生成音频](https://www.doubao.com/chat/{conv_id})" if conv_id else ""
+            pod_text = f"🎙️ AI播客脚本已生成{doubao_link}\n\n{script.get('script', '')}"
         else:
             pod_text = f"播客生成失败: {status.get('error', '未知错误')}"
         return {
@@ -475,21 +479,28 @@ async def _stream_podcast_generation(topic: str, model: str, chat_id: str):
     try:
         pod_result = await start_podcast_generation(topic)
         task_id = pod_result["task_id"]
-        for i in range(60):
+        for i in range(80):
             await asyncio.sleep(3)
             status = await get_podcast_status(task_id)
             if status["status"] == "generating":
                 if i % 5 == 0:
-                    yield format_openai_chunk("⏳ 播客生成中...\n", model, chat_id)
+                    yield format_openai_chunk("⏳ 播客脚本生成中...\n", model, chat_id)
+            elif status["status"] == "generating_audio":
+                if i % 5 == 0:
+                    yield format_openai_chunk("🎵 播客音频生成中...\n", model, chat_id)
             elif status["status"] == "completed":
                 break
             elif status["status"] in ("script_ready", "failed"):
                 break
         if status.get("audio_url"):
-            yield format_openai_chunk(f"✅ AI播客已生成！\n\n标题：{status.get('title', topic)}\n时长：{status.get('duration', '--')}秒\n\n🔊 [收听播客]({status['audio_url']})\n", model, chat_id)
+            dur_sec = status.get('duration', 0)
+            dur_str = f"{int(dur_sec)//60}:{str(int(dur_sec)%60).zfill(2)}" if dur_sec else "--:--"
+            yield format_openai_chunk(f"✅ AI播客已生成！\n\n**{status.get('title', topic)}**\n时长：{dur_str}\n\n🔊 [收听播客]({status['audio_url']})\n", model, chat_id)
         elif status.get("script_length", 0) > 0:
             script = await get_podcast_script(task_id)
-            yield format_openai_chunk(f"📝 AI播客脚本已生成（音频需在豆包客户端生成）\n\n{script.get('script', '')}\n", model, chat_id)
+            conv_id = status.get("conversation_id", "")
+            doubao_link = f"\n\n💡 [在豆包网页版中生成音频](https://www.doubao.com/chat/{conv_id})" if conv_id else ""
+            yield format_openai_chunk(f"📝 AI播客脚本已生成{doubao_link}\n\n{script.get('script', '')}\n", model, chat_id)
         else:
             yield format_openai_chunk(f"❌ 播客生成失败: {status.get('error', '未知错误')}\n", model, chat_id)
     except Exception as e:

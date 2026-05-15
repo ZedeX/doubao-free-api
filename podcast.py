@@ -302,6 +302,188 @@ async def _run_podcast_generation(task_id: str, topic: str, conversation_id: str
         PODCAST_TASKS[task_id]["error"] = str(e)
 
 
+async def _try_generate_audio(task_id: str, conversation_id: str, account: dict):
+    try:
+        params = build_url_params(account)
+        url = f"{CONFIG['api_base']}/samantha/chat/completion?{params}"
+        headers = build_headers(account)
+
+        body = {
+            "bot_id": "7338286299411103781",
+            "completion_option": {
+                "is_regen": False,
+                "with_suggest": False,
+                "need_create_conversation": False,
+                "launch_stage": 1,
+                "use_auto_cot": False,
+                "use_deep_think": False
+            },
+            "conversation_id": conversation_id,
+            "local_conversation_id": f"local_{uuid.uuid4().int % 10000000000000000}",
+            "local_message_id": str(uuid.uuid4()),
+            "messages": [{
+                "content": json.dumps({"text": "生成音频"}, ensure_ascii=False),
+                "content_type": 2001,
+                "attachments": [],
+                "references": []
+            }],
+            "ext": {
+                "fp": CONFIG.get('fp', '')
+            }
+        }
+
+        logger.info(f"[Podcast] Sending audio generation request for conv {conversation_id}")
+
+        episode_id = None
+        audio_url = None
+        cover_url = None
+        title = None
+        duration = None
+        gateway_error = False
+        audio_text = ""
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=180)) as resp:
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    logger.warning(f"[Podcast] Audio gen request failed: {resp.status}")
+                    PODCAST_TASKS[task_id]["status"] = "script_ready"
+                    return
+
+                line_count = 0
+                async for raw_line in resp.content:
+                    try:
+                        line = raw_line.decode('utf-8', errors='replace').strip()
+                    except:
+                        continue
+                    if not line:
+                        continue
+
+                    line_count += 1
+                    if line_count <= 3:
+                        logger.info(f"[Podcast] Audio SSE line {line_count}: {line[:200]}")
+
+                    if line.startswith('event:'):
+                        event_name = line[6:].strip()
+                        if event_name == 'gateway-error':
+                            gateway_error = True
+                            logger.warning(f"[Podcast] Audio gen gateway error")
+                        continue
+
+                    if line.startswith('data:'):
+                        data_str = line[5:].strip()
+                        if data_str == '[DONE]':
+                            break
+
+                        if gateway_error:
+                            logger.warning(f"[Podcast] Audio gen failed with gateway error")
+                            PODCAST_TASKS[task_id]["status"] = "script_ready"
+                            return
+
+                        try:
+                            outer = json.loads(data_str)
+                            event_type = outer.get("event_type")
+                            event_data_raw = outer.get("event_data", "")
+
+                            if isinstance(event_data_raw, str) and event_data_raw:
+                                try:
+                                    event_data = json.loads(event_data_raw)
+                                except:
+                                    event_data = {}
+                            else:
+                                event_data = event_data_raw if isinstance(event_data_raw, dict) else {}
+
+                            if event_type == 2001:
+                                msg = event_data.get("message", {})
+                                ct = msg.get("content_type")
+                                raw_content = msg.get("content", "")
+                                if ct in (10000, 2001) and isinstance(raw_content, str):
+                                    try:
+                                        parsed = json.loads(raw_content)
+                                        text = parsed.get("text", "")
+                                        if text:
+                                            audio_text += text
+                                    except json.JSONDecodeError:
+                                        if raw_content:
+                                            audio_text += raw_content
+
+                            if event_type == 2003:
+                                content_obj = event_data.get("content_obj", {})
+
+                                podcast_data = content_obj.get("podcast")
+                                if podcast_data:
+                                    episode_id = podcast_data.get("id")
+                                    title = podcast_data.get("podcast_title") or podcast_data.get("title")
+                                    meta = podcast_data.get("meta", {})
+                                    cover_url = meta.get("podcast_cover_thumbnail")
+                                    playback = meta.get("playback_model", {})
+                                    audio_url = playback.get("audio_link")
+                                    dur = playback.get("duration")
+                                    if dur:
+                                        try:
+                                            duration = int(dur)
+                                        except:
+                                            duration = None
+                                    logger.info(f"[Podcast] Audio gen found episode: {episode_id}")
+
+                                widget_data_str = content_obj.get("widget_data")
+                                if widget_data_str and not episode_id:
+                                    try:
+                                        widget_data = json.loads(widget_data_str) if isinstance(widget_data_str, str) else widget_data_str
+                                        data_section = widget_data.get("data", {})
+                                        if isinstance(data_section, str):
+                                            data_section = json.loads(data_section)
+                                        episode_list = data_section.get("episodeList", {})
+                                        episodes = episode_list.get("episodes", [])
+                                        if episodes:
+                                            ep = episodes[0]
+                                            episode_id = ep.get("id")
+                                            title = ep.get("podcast_title") or ep.get("title")
+                                            meta = ep.get("meta", {})
+                                            cover_url = meta.get("podcast_cover_thumbnail")
+                                            playback = meta.get("playback_model", {})
+                                            audio_url = playback.get("audio_link")
+                                            dur = playback.get("duration")
+                                            if dur:
+                                                try:
+                                                    duration = int(dur)
+                                                except:
+                                                    duration = None
+                                            logger.info(f"[Podcast] Audio gen found episode from widget: {episode_id}")
+                                    except Exception as e:
+                                        logger.warning(f"[Podcast] Audio gen widget parse error: {e}")
+
+                        except json.JSONDecodeError:
+                            pass
+
+        logger.info(f"[Podcast] Audio gen stream ended: {line_count} lines, episode_id={episode_id}, audio_text={len(audio_text)} chars")
+        if audio_text:
+            logger.info(f"[Podcast] Audio gen text: {audio_text[:300]}")
+
+        if episode_id:
+            PODCAST_TASKS[task_id]["episode_id"] = episode_id
+            if title:
+                PODCAST_TASKS[task_id]["title"] = title
+            if cover_url:
+                PODCAST_TASKS[task_id]["cover_url"] = cover_url
+
+            if not audio_url:
+                logger.info(f"[Podcast] Audio gen: polling for audio URL...")
+                await _poll_podcast_detail(task_id, episode_id, account)
+            else:
+                PODCAST_TASKS[task_id]["audio_url"] = audio_url
+                PODCAST_TASKS[task_id]["duration"] = duration
+                PODCAST_TASKS[task_id]["status"] = "completed"
+                logger.info(f"[Podcast] Audio gen completed: task_id={task_id}")
+        else:
+            PODCAST_TASKS[task_id]["status"] = "script_ready"
+            logger.info(f"[Podcast] Audio gen: no episode_id found, script only")
+
+    except Exception as e:
+        logger.error(f"[Podcast] Audio generation failed: {e}")
+        PODCAST_TASKS[task_id]["status"] = "script_ready"
+
+
 async def _poll_podcast_detail(task_id: str, episode_id: str, account: dict, max_retries: int = 30):
     for i in range(max_retries):
         try:
@@ -346,7 +528,8 @@ async def get_podcast_status(task_id: str):
         "duration": task.get("duration"),
         "script_length": len(task.get("script", "")) if task.get("script") else 0,
         "error": task.get("error"),
-        "created_at": task.get("created_at")
+        "created_at": task.get("created_at"),
+        "conversation_id": task.get("conversation_id")
     }
 
 
@@ -359,7 +542,8 @@ async def get_podcast_script(task_id: str):
         "topic": task["topic"],
         "status": task["status"],
         "script": task.get("script", ""),
-        "title": task.get("title")
+        "title": task.get("title"),
+        "conversation_id": task.get("conversation_id")
     }
 
 
