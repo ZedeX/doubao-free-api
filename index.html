@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github-dark.min.css">
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -228,16 +229,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC
 
 .msg{margin-bottom:16px;display:flex;gap:10px;animation:msgIn .3s ease}
 .msg-user{flex-direction:row-reverse}
-.msg-avatar{
-  width:32px;height:32px;border-radius:50%;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;
-  font-size:14px;
-}
-.msg-ai .msg-avatar{background:var(--accent-light);color:var(--accent2)}
-.msg-user .msg-avatar{background:rgba(108,92,231,.3);color:#fff}
-.msg-content{max-width:75%}
+.msg-content{max-width:85%}
 .msg-user .msg-content{display:flex;flex-direction:column;align-items:flex-end}
-.msg-name{font-size:11px;color:var(--dim);margin-bottom:4px;padding:0 4px}
 .msg-bubble{
   padding:10px 16px;font-size:14px;line-height:1.7;
   word-break:break-word;
@@ -247,8 +240,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC
   border-radius:16px 16px 4px 16px;
 }
 .msg-ai .msg-bubble{
-  background:var(--ai-bubble);
-  border-radius:16px 16px 16px 4px;
+  background:transparent;
+  border-radius:0;
 }
 .msg-bubble img{max-width:100%;border-radius:8px;margin:4px 0}
 
@@ -267,7 +260,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC
 .chat-msg-ai ul,.chat-msg-ai ol{margin:4px 0 4px 20px}
 .chat-msg-ai li{margin:2px 0}
 .chat-msg-ai code{background:var(--sidebar-bg);padding:1px 5px;border-radius:3px;font-size:12px;font-family:Consolas,monospace}
-.chat-msg-ai pre{background:var(--sidebar-bg);padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0}
+.chat-msg-ai pre{background:var(--sidebar-bg);padding:12px;overflow-x:auto;margin:0}
 .chat-msg-ai pre code{background:none;padding:0}
 .chat-msg-ai blockquote{border-left:3px solid var(--accent);padding-left:10px;margin:6px 0;color:var(--dim)}
 .chat-msg-ai img{max-width:100%;border-radius:8px;margin:6px 0}
@@ -276,6 +269,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC
 .chat-msg-ai table{border-collapse:collapse;margin:6px 0;width:100%}
 .chat-msg-ai th,.chat-msg-ai td{border:1px solid var(--border);padding:6px 10px;text-align:left}
 .chat-msg-ai th{background:var(--sidebar-bg)}
+
+.mermaid-wrapper{margin:8px 0;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.mermaid-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:var(--card-bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--dim)}
+.mermaid-toggle{background:none;border:1px solid var(--border);color:var(--accent2);padding:2px 10px;border-radius:4px;cursor:pointer;font-size:11px}
+.mermaid-toggle:hover{background:var(--accent-light)}
+.mermaid-code pre{margin:0;padding:12px;background:var(--sidebar-bg);overflow-x:auto}
+.mermaid-chart{padding:16px;text-align:center;background:var(--main-bg)}
+.mermaid-chart svg{max-width:100%}
+
+.code-block-wrapper{margin:8px 0;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.code-block-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:var(--card-bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--dim)}
+.code-copy-btn{background:none;border:1px solid var(--border);color:var(--dim);padding:2px 10px;border-radius:4px;cursor:pointer;font-size:11px}
+.code-copy-btn:hover{color:var(--accent2);border-color:var(--accent2)}
 
 .thinking-block{
   margin-bottom:8px;border:1px solid var(--border);border-radius:8px;
@@ -722,7 +728,7 @@ tr:hover td{background:rgba(108,92,231,.05)}
       <div class="card-title">📤 从豆包网站抓取对话</div>
       <p style="font-size:12px;color:var(--dim);margin-bottom:8px">从豆包网站抓取当前账号下已有的对话，包含文本、图片和视频</p>
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <button class="btn btn-primary" onclick="fetchDoubaoConversations()" id="fetchConvBtn">抓取对话列表</button>
+        <button class="btn btn-primary" onclick="fetchDoubaoConversations()" id="fetchConvBtn">抓取并导入</button>
       </div>
       <div id="doubaoConvList" style="max-height:200px;overflow-y:auto"></div>
     </div>
@@ -787,6 +793,9 @@ tr:hover td{background:rgba(108,92,231,.05)}
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+if (typeof mermaid !== 'undefined') {
+  mermaid.initialize({startOnLoad: false, theme: 'dark', securityLevel: 'loose'});
+}
 let API_BASE = '';
 let allLogs = [];
 let logPage = 1;
@@ -1174,7 +1183,7 @@ async function sendChat() {
 
   const userDiv = document.createElement('div');
   userDiv.className = 'msg msg-user';
-  let userHtml = '<div class="msg-avatar">你</div><div class="msg-content"><div class="msg-name">你</div><div class="msg-bubble">';
+  let userHtml = '<div class="msg-content"><div class="msg-bubble">';
   if (pendingImageBase64) {
     userHtml += `<img src="${pendingImageBase64}" style="max-width:200px;max-height:150px;border-radius:8px;margin-bottom:4px;display:block">`;
   }
@@ -1184,7 +1193,7 @@ async function sendChat() {
 
   const aiDiv = document.createElement('div');
   aiDiv.className = 'msg msg-ai';
-  aiDiv.innerHTML = `<div class="msg-avatar">豆</div><div class="msg-content"><div class="msg-name">豆包 · ${MODEL_MAP[model] || model}</div><div class="msg-bubble chat-msg-ai"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>`;
+  aiDiv.innerHTML = `<div class="msg-content"><div class="msg-bubble chat-msg-ai"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>`;
   chatInner.appendChild(aiDiv);
   const aiBubble = aiDiv.querySelector('.msg-bubble');
 
@@ -1412,6 +1421,9 @@ function renderMarkdown(text) {
   if (typeof marked !== 'undefined') {
     marked.setOptions({
       highlight: function(code, lang) {
+        if (lang === 'mermaid') {
+          return code;
+        }
         if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
           return hljs.highlight(code, {language: lang}).value;
         }
@@ -1420,7 +1432,21 @@ function renderMarkdown(text) {
       breaks: true,
       gfm: true
     });
-    let html = marked.parse(text);
+
+    const renderer = new marked.Renderer();
+    renderer.code = function(code, lang) {
+      if (lang === 'mermaid') {
+        const id = 'mermaid_' + Math.random().toString(36).substr(2, 9);
+        return `<div class="mermaid-wrapper"><div class="mermaid-header"><span>Mermaid 图表</span><button class="mermaid-toggle" onclick="toggleMermaidView('${id}')">切换代码/图表</button></div><div id="${id}_code" class="mermaid-code"><pre><code class="language-mermaid">${escHtml(code)}</code></pre></div><div id="${id}_chart" class="mermaid-chart" style="display:none"><div class="mermaid">${escHtml(code)}</div></div></div>`;
+      }
+      const highlighted = lang && typeof hljs !== 'undefined' && hljs.getLanguage(lang)
+        ? hljs.highlight(code, {language: lang}).value
+        : (typeof hljs !== 'undefined' ? hljs.highlightAuto(code).value : escHtml(code));
+      const id = 'code_' + Math.random().toString(36).substr(2, 9);
+      return `<div class="code-block-wrapper"><div class="code-block-header"><span>${lang || 'code'}</span><button class="code-copy-btn" onclick="copyCodeBlock('${id}')">复制</button></div><pre id="${id}"><code class="hljs">${highlighted}</code></pre></div>`;
+    };
+
+    let html = marked.parse(text, {renderer});
     html = html.replace(/<a href="(https?:\/\/[^"]*(?:douyinvod|douyin|byteimg|bytedance|volcengine|bdurl|bytegecko|bdemc|tiktokcdn)[^"]*)"[^>]*>([^<]*)<\/a>/gi, function(match, url, label) {
       return renderAudioPlayer(url, label);
     });
@@ -1440,6 +1466,39 @@ function renderMarkdown(text) {
   html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/`([^`]+)`/g, '<code style="background:var(--sidebar-bg);padding:1px 4px;border-radius:3px;font-size:12px">$1</code>');
   return html;
+}
+
+function toggleMermaidView(id) {
+  const codeEl = document.getElementById(id + '_code');
+  const chartEl = document.getElementById(id + '_chart');
+  if (!codeEl || !chartEl) return;
+  if (chartEl.style.display === 'none') {
+    chartEl.style.display = 'block';
+    codeEl.style.display = 'none';
+    if (typeof mermaid !== 'undefined' && chartEl.querySelector('.mermaid')) {
+      mermaid.run({nodes: chartEl.querySelectorAll('.mermaid')});
+    }
+  } else {
+    chartEl.style.display = 'none';
+    codeEl.style.display = 'block';
+  }
+}
+
+function copyCodeBlock(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const code = el.textContent;
+  navigator.clipboard.writeText(code).then(() => {
+    toast('已复制到剪贴板', 'success');
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = code;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast('已复制到剪贴板', 'success');
+  });
 }
 
 function newConversation() {
@@ -1540,10 +1599,8 @@ async function switchConv(convId) {
       const div = document.createElement('div');
       const isUser = msg.role === 'user';
       div.className = isUser ? 'msg msg-user' : 'msg msg-ai';
-      const avatar = isUser ? '你' : '豆';
-      const name = isUser ? '你' : '豆包';
       const bubble = isUser ? escHtml(msg.content || '') : renderMarkdown(msg.content || '');
-      div.innerHTML = `<div class="msg-avatar">${avatar}</div><div class="msg-content"><div class="msg-name">${name}</div><div class="msg-bubble${isUser ? '' : ' chat-msg-ai'}">${bubble}</div></div>`;
+      div.innerHTML = `<div class="msg-content"><div class="msg-bubble${isUser ? '' : ' chat-msg-ai'}">${bubble}</div></div>`;
       chatInner.appendChild(div);
     }
     messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -1972,20 +2029,48 @@ async function fetchDoubaoConversations() {
       $('#doubaoConvList').innerHTML = '<div style="padding:8px;color:var(--dim);font-size:12px">未找到对话</div>';
       return;
     }
-    let html = '<table><thead><tr><th>标题</th><th>操作</th></tr></thead><tbody>';
+    toast(`找到 ${convs.length} 个对话，正在自动导入...`, 'info');
+    let imported = 0;
+    for (const c of convs) {
+      try {
+        const msgData = await api(`/v1/doubao/conversations/${c.id}/export`);
+        const messages = msgData.messages || [];
+        if (messages.length === 0) continue;
+        await api('/api/conversations', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({id: c.id, title: c.title || '导入的对话', model: 'doubao-pro-chat'})
+        });
+        for (const msg of messages) {
+          const content = msg.text || msg.raw_content || '';
+          if (!content) continue;
+          await api(`/api/conversations/${c.id}/messages`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({role: msg.role || 'assistant', content: content, model: 'doubao-pro-chat'})
+          });
+        }
+        imported++;
+      } catch (e) {
+        console.error(`Failed to import ${c.id}:`, e);
+      }
+    }
+    await loadConvListFromServer();
+    let html = '<div style="padding:8px;color:var(--green);font-size:12px">✅ 已自动导入 ' + imported + '/' + convs.length + ' 个对话</div>';
+    html += '<table><thead><tr><th>标题</th><th>操作</th></tr></thead><tbody>';
     convs.forEach(c => {
       const title = escHtml(c.title || '无标题');
-      html += `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</td><td style="white-space:nowrap"><button class="btn btn-primary btn-sm" onclick="importDoubaoConversation('${c.id}','${escHtml(c.title || '').replace(/'/g, "\\'")}')">导入</button> <button class="btn btn-sm" onclick="exportDoubaoConversation('${c.id}')">导出JSON</button></td></tr>`;
+      html += `<tr><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</td><td style="white-space:nowrap"><button class="btn btn-sm" onclick="exportDoubaoConversation('${c.id}')">导出JSON</button></td></tr>`;
     });
     html += '</tbody></table>';
     $('#doubaoConvList').innerHTML = html;
-    toast(`找到 ${convs.length} 个对话`, 'success');
+    toast(`已自动导入 ${imported} 个对话`, 'success');
   } catch (e) {
     toast(`抓取失败: ${e.message}`, 'error');
     $('#doubaoConvList').innerHTML = `<div style="padding:8px;color:var(--red);font-size:12px">抓取失败: ${escHtml(e.message)}</div>`;
   } finally {
     btn.disabled = false;
-    btn.textContent = '抓取对话列表';
+    btn.textContent = '抓取并导入';
   }
 }
 
@@ -2222,12 +2307,12 @@ async function sendMusicGeneration(prompt) {
   
   const userDiv = document.createElement('div');
   userDiv.className = 'msg msg-user';
-  userDiv.innerHTML = `<div class="msg-avatar">你</div><div class="msg-content"><div class="msg-name">你</div><div class="msg-bubble">🎵 ${escHtml(desc)}</div></div>`;
+  userDiv.innerHTML = `<div class="msg-content"><div class="msg-bubble">🎵 ${escHtml(desc)}</div></div>`;
   chatInner.appendChild(userDiv);
   
   const aiDiv = document.createElement('div');
   aiDiv.className = 'msg msg-ai';
-  aiDiv.innerHTML = `<div class="msg-avatar">豆</div><div class="msg-content"><div class="msg-name">豆包 · 音乐</div><div class="msg-bubble chat-msg-ai"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>`;
+  aiDiv.innerHTML = `<div class="msg-content"><div class="msg-bubble chat-msg-ai"><div class="typing-indicator"><span></span><span></span><span></span></div></div></div>`;
   chatInner.appendChild(aiDiv);
   const aiBubble = aiDiv.querySelector('.msg-bubble');
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -2313,7 +2398,7 @@ async function playMusicInChat(taskId) {
     const proxyAudioUrl = getApiUrl('/api/proxy/audio') + '?task_id=' + encodeURIComponent(taskId);
     const downloadUrl = getApiUrl('/api/proxy/download') + '/' + encodeURIComponent(taskId);
     const apId = 'ap_' + Math.random().toString(36).substr(2, 8);
-    aiDiv.innerHTML = `<div class="msg-avatar">豆</div><div class="msg-content"><div class="msg-name">豆包 · 音乐</div><div class="msg-bubble chat-msg-ai">
+    aiDiv.innerHTML = `<div class="msg-content"><div class="msg-bubble chat-msg-ai">
       <div class="music-card">
         <div class="music-card-header">
           ${coverHtml}
