@@ -1434,7 +1434,9 @@ function renderMarkdown(text) {
     });
 
     const renderer = new marked.Renderer();
-    renderer.code = function(code, lang) {
+    renderer.code = function(token) {
+      const code = (typeof token === 'object' && token !== null) ? (token.text || token.raw || String(token)) : String(token);
+      const lang = (typeof token === 'object' && token !== null) ? (token.lang || '') : (arguments[1] || '');
       if (lang === 'mermaid') {
         const id = 'mermaid_' + Math.random().toString(36).substr(2, 9);
         return `<div class="mermaid-wrapper"><div class="mermaid-header"><span>Mermaid 图表</span><button class="mermaid-toggle" onclick="toggleMermaidView('${id}')">切换代码/图表</button></div><div id="${id}_code" class="mermaid-code"><pre><code class="language-mermaid">${escHtml(code)}</code></pre></div><div id="${id}_chart" class="mermaid-chart" style="display:none"><div class="mermaid">${escHtml(code)}</div></div></div>`;
