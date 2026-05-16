@@ -67,6 +67,18 @@
 | 05-14 15:25 | 图片生成集成到模型下拉选择（doubao-image），移除单独按钮 | 统一交互方式 |
 | 05-14 15:30 | 引入marked.js+highlight.js，完整Markdown渲染 | 标题/列表/代码块/表格/引用/链接/图片 |
 | 05-14 15:45 | 播客脚本生成测试通过 | 1900字完整播客脚本，含时间标记和分段 |
+| 05-16 02:00 | 开始逆向豆包TTS协议 | 分析SAMI SDK、WebSocket通信、Protobuf编码 |
+| 05-16 08:00 | 发现火山引擎V3 WebSocket TTS协议文档 | wss://openspeech.bytedance.com/api/v3/tts/bidirection |
+| 05-16 09:00 | 发现豆包TTS凭据来源 | /alice/user/launch 返回 audio_app_key + audio_token |
+| 05-16 10:00 | V3协议认证失败，转向V1协议 | V3的X-Api-App-Key头与豆包凭据不兼容 |
+| 05-16 10:30 | **V1协议TTS验证成功！** | 首次成功生成5.5秒音频，109KB MP3 |
+| 05-16 11:00 | 修复V1协议Audio帧解析 | sequence number字段导致payload偏移错误 |
+| 05-16 11:30 | 端到端播客+TTS验证通过 | 848KB音频，42.4秒，8/8段成功 |
+| 05-16 12:00 | 发现豆包appid仅支持1个音色 | zh_female_wenroutaozi_uranus_bigtts，男声不可用 |
+| 05-16 12:30 | 播客API完整验证通过 | 4.1MB音频，206秒，火山引擎原生TTS |
+| 05-16 13:00 | 添加播客前置/后置音乐 | ffmpeg合并intro+content+outro，渐入渐出效果 |
+| 05-16 13:30 | 修复前端播放器+下载按钮 | 直接播放本地音频，添加下载按钮 |
+| 05-16 14:00 | 去除播客提示词音频 | _clean_podcast_script过滤AI回复前缀 |
 
 ---
 
@@ -1276,17 +1288,18 @@ d:\_program\Doubao\doubao-api\
 
 **结论**：无法通过 samantha 端点复用，需独立逆向文档生成服务。
 
-#### 12.4.2 AI播客
+#### 12.4.2 AI播客 ✅ 已实现
 
 **功能描述**：上传PDF或网页链接，生成两个AI角色之间的对话式播客，语音自然流畅。
 
-**复用障碍**：
-- ❌ 涉及多步管线：文本提取 → 对话脚本生成 → TTS双角色合成 → 音频拼接
-- ❌ 音频生成使用独立TTS服务
-- ❌ 双角色对话逻辑在服务端编排
-- ❌ 输出为音频流，非文本
+**原评估**（⭐ 低可行性）→ **已实现** ✅
 
-**结论**：管线过于复杂，无法通过单一API端点复用。
+**实现路径**：
+1. **脚本生成**：通过 `/chat/completion` API + `doubao-podcast` 模型生成双人对话脚本
+2. **TTS音频合成**：逆向火山引擎V1 WebSocket TTS协议，使用豆包原生音色
+3. **音频合并**：ffmpeg 合并前置音乐 + 分段音频 + 后置音乐
+
+**关键技术突破**：详见第16章「火山引擎 TTS 逆向工程」
 
 #### 12.4.3 视频生成
 
@@ -1750,3 +1763,289 @@ except ImportError:
 | Web界面音乐播放 | ✅ 通过 | 音频播放器正常工作，封面+标题+时长显示 |
 | Favicon显示 | ✅ 通过 | 内联SVG正常渲染 |
 | 导出/导入面板 | ✅ 通过 | 面板功能完整 |
+
+---
+
+## 16. 火山引擎 TTS 逆向工程
+
+### 16.1 背景
+
+豆包的播客功能使用火山引擎（字节跳动云服务）的语音合成（TTS）服务生成音频。为实现原生音质的播客音频生成，我们对TTS协议进行了完整逆向。
+
+### 16.2 TTS 凭据获取
+
+#### 16.2.1 凭据来源
+
+TTS认证凭据通过豆包的 `/alice/user/launch` API获取：
+
+```
+POST https://www.doubao.com/alice/user/launch?aid=497858&...
+Cookie: <用户cookie>
+```
+
+响应中的关键字段：
+
+```json
+{
+  "data": {
+    "config": {
+      "audio_app_key": "<APP_KEY>",
+      "audio_token": "<JWT_TOKEN>",
+      "enterprise_audio_app_key": "<ENTERPRISE_APP_KEY>"
+    }
+  }
+}
+```
+
+| 字段 | 用途 | 示例值 |
+|------|------|--------|
+| `audio_app_key` | TTS appid | `<APP_KEY>` |
+| `audio_token` | TTS JWT token | `<JWT_TOKEN>` (有效期约1小时) |
+| `enterprise_audio_app_key` | 企业版appid | `<ENTERPRISE_APP_KEY>` |
+
+#### 16.2.2 JWT Token 解析
+
+`audio_token` 是标准JWT，payload包含：
+
+```json
+{
+  "iss": "data.speech.saas_ram",
+  "account_id": "<ACCOUNT_ID>",
+  "app_id": <APP_ID>,
+  "appkey": "<APP_KEY>",
+  "exp": 1718841600,
+  "iat": 1718838000
+}
+```
+
+#### 16.2.3 B2签名器
+
+使用B2签名器（Playwright + a_bogus签名）调用launch API时，凭据返回正常。不使用签名时，凭据字段为空。
+
+### 16.3 协议分析
+
+#### 16.3.1 V3 双向流式协议（失败）
+
+火山引擎公开文档描述了V3协议：
+
+- **端点**: `wss://openspeech.bytedance.com/api/v3/tts/bidirection`
+- **认证**: HTTP请求头 `X-Api-App-Key` + `X-Api-Access-Key` + `X-Api-Resource-Id`
+- **协议**: 4字节header + event number + session_id + payload
+
+**失败原因**：V3协议的 `X-Api-App-Key` 头期望火山引擎控制台注册的appid，而豆包的appid不被V3端点识别，返回401。
+
+#### 16.3.2 V1 二进制协议（成功 ✅）
+
+V1协议是火山引擎TTS的旧版协议，与豆包的凭据兼容：
+
+- **端点**: `wss://openspeech.bytedance.com/api/v1/tts/ws_binary`
+- **认证**: JSON payload中的 `appid` + `token` 字段
+- **无需HTTP头认证**
+
+### 16.4 V1 协议详细规范
+
+#### 16.4.1 请求帧格式
+
+```
+┌──────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+│ Byte 0   │ Byte 1       │ Byte 2       │ Byte 3       │ Payload      │
+├──────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│ ver│hsz  │ type│flags   │ ser│comp     │ reserved     │ JSON payload │
+└──────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+```
+
+| 字段 | 位数 | 说明 |
+|------|------|------|
+| ver (4bit) | 协议版本，固定 `0b0001` | |
+| hsz (4bit) | header大小/4，固定 `0b0001` (4字节) | |
+| type (4bit) | 消息类型：`0b0001`=FullClient, `0b1001`=FullServer, `0b1011`=AudioOnly, `0b1111`=Error | |
+| flags (4bit) | 序列号标志：`0b0000`=无, `0b0001`=正序, `0b0010`=负序(最后一帧) | |
+| ser (4bit) | 序列化方式：`0b0000`=Raw, `0b0001`=JSON | |
+| comp (4bit) | 压缩方式：`0b0000`=无, `0b0001`=gzip | |
+
+#### 16.4.2 请求JSON结构
+
+```json
+{
+  "app": {
+    "appid": "<APP_KEY>",
+    "token": "<audio_token>",
+    "cluster": "volcano_tts"
+  },
+  "user": {
+    "uid": "doubao_podcast"
+  },
+  "audio": {
+    "voice_type": "zh_female_wenroutaozi_uranus_bigtts",
+    "encoding": "mp3",
+    "speed_ratio": 1.0,
+    "volume_ratio": 1.0,
+    "pitch_ratio": 1.0
+  },
+  "request": {
+    "reqid": "<uuid>",
+    "text": "你好世界",
+    "text_type": "plain",
+    "operation": "submit"
+  }
+}
+```
+
+#### 16.4.3 响应帧解析
+
+**Full Server Response** (type=0b1001, flags=0b0000):
+- 4字节header + 4字节payload_size + JSON payload
+- 包含TTS任务状态信息
+
+**Audio Only Response** (type=0b1011, flags=0b0001或0b0010):
+- 4字节header + **4字节sequence_number** + 4字节payload_size + raw audio bytes
+- flags=0b0010 表示最后一帧
+
+**Error Response** (type=0b1111):
+- 4字节header + 4字节payload_size + JSON payload
+- 包含错误详情，如 `{"code": 3001, "message": "engine process fail!"}`
+
+#### 16.4.4 关键发现：sequence number 字段
+
+Audio-only帧在flags指示有序列号时（flags & 0x01 或 flags & 0x02），header和payload_size之间有一个4字节的**有符号整数**序列号字段。这是解析V1协议最容易出错的地方：
+
+```
+错误解析（缺少seq字段）：
+  header(4) + payload_size(4) + payload → 只读到5字节数据
+
+正确解析：
+  header(4) + seq_num(4) + payload_size(4) + payload → 读到7425字节数据
+```
+
+### 16.5 音色兼容性
+
+#### 16.5.1 豆包appid支持的音色
+
+豆包web客户端的appid仅注册了1个音色：
+
+| 音色ID | 名称 | 状态 |
+|--------|------|------|
+| `zh_female_wenroutaozi_uranus_bigtts` | 温柔桃子（女声） | ✅ 可用 |
+| `zh_male_chunhou_uranus_bigtts` | 醇厚（男声） | ❌ engine process fail |
+| `zh_male_chunhou_moon_bigtts` | 醇厚moon（男声） | ❌ engine process fail |
+| `zh_female_shuangkuaisisi_moon_bigtts` | 双快丝丝（女声） | ❌ engine process fail |
+
+#### 16.5.2 cluster 测试
+
+| cluster | 结果 |
+|---------|------|
+| `volcano_tts` | ✅ 女声可用 |
+| `volcano_mega_tts` | ❌ 所有音色失败 |
+
+**结论**：豆包的appid是受限的，只允许使用注册时指定的音色和cluster。如需更多音色，需在火山引擎控制台自行申请。
+
+### 16.6 实现架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    播客生成流程                           │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  1. 脚本生成                                            │
+│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐  │
+│  │ 用户请求  │───→│ /chat/       │───→│ 双人对话脚本  │  │
+│  │ topic    │    │ completion   │    │ Markdown格式  │  │
+│  └──────────┘    └──────────────┘    └──────┬───────┘  │
+│                                              │          │
+│  2. 脚本清洗 + 解析                          │          │
+│  ┌──────────────────────────────────────────┐│          │
+│  │ _clean_podcast_script()                  ││          │
+│  │  - 过滤AI回复前缀（"好的，我来帮你..."）    ││          │
+│  │  - 保留从第一个#标题开始的正文              ││          │
+│  │ _parse_podcast_script()                  ││          │
+│  │  - 按主播分段：host1, host2              │←┘          │
+│  └──────────────────────────────────────────┘           │
+│                                              │          │
+│  3. TTS音频合成                              │          │
+│  ┌──────────────────────────────────────────┐│          │
+│  │ 优先：火山引擎V1 TTS                     ││          │
+│  │  - get_tts_credentials() 获取凭据        ││          │
+│  │  - volcengine_tts_segmented() 分段合成    ││          │
+│  │  - 每段独立WebSocket连接                 ││          │
+│  │ 回退：edge-tts                           ││          │
+│  │  - 代理支持（9个本地代理轮询）            ││          │
+│  └──────────────────────────────────────────┘           │
+│                                              │          │
+│  4. 音频合并                                 │          │
+│  ┌──────────────────────────────────────────┐│          │
+│  │ _merge_jingle_audio()                    ││          │
+│  │  - intro_jingle.mp3 + 内容 + outro.mp3   ││          │
+│  │  - ffmpeg concat + fade in/out           ││          │
+│  │  - 可通过参数配置开关                     ││          │
+│  └──────────────────────────────────────────┘           │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 16.7 播客API端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/podcast/generate` | POST | 生成播客（支持 `intro_jingle`/`outro_jingle` 参数） |
+| `/v1/podcast/status/{task_id}` | GET | 查询生成状态 |
+| `/v1/podcast/audio/{task_id}` | GET | 获取音频URL+元数据 |
+| `/v1/podcast/script/{task_id}` | GET | 获取播客脚本 |
+| `/v1/podcast/list` | GET | 播客任务列表 |
+| `/v1/podcast/file/{filename}` | GET | 音频文件下载 |
+| `/v1/podcast/config` | GET/POST | 播客配置（前置/后置音乐开关） |
+
+### 16.8 前端适配
+
+#### 16.8.1 播客播放器
+
+前端播客播放器支持：
+- **直接播放**：`<audio>` 元素，本地文件通过 `/v1/podcast/file/` URL直接加载
+- **下载按钮**：`<a download>` 链接，点击即下载MP3
+- **前置/后置音乐开关**：复选框控制，参数传递到生成API
+- **封面+时长显示**：从API元数据获取
+
+#### 16.8.2 音频URL路由
+
+```javascript
+// 本地播客文件 - 直接使用API URL
+if (data.audio_url.startsWith('/v1/podcast/file/')) {
+  audioSrc = getApiUrl(data.audio_url);
+}
+// 外部URL - 走代理
+else if (data.audio_url.startsWith('http')) {
+  audioSrc = getApiUrl('/api/proxy/audio') + '?url=' + encodeURIComponent(data.audio_url);
+}
+```
+
+### 16.9 性能数据
+
+| 指标 | 数值 |
+|------|------|
+| 单段TTS延迟 | ~1-2秒（5秒音频） |
+| 8段播客总耗时 | ~16秒（42秒音频） |
+| 完整播客（含音乐） | ~30秒（251秒音频） |
+| 音频质量 | MP3 24kHz 128kbps |
+| 文件大小 | ~16KB/秒音频 |
+
+### 16.10 已知限制与改进方向
+
+| 限制 | 说明 | 改进方案 |
+|------|------|----------|
+| 单音色 | 豆包appid仅支持1个女声 | 申请火山引擎控制台自己的appid |
+| Token时效 | audio_token约1小时过期 | 自动刷新机制已实现 |
+| Cookie依赖 | 需要有效豆包登录态 | 多账号池轮询 |
+| V3不可用 | 豆包凭据与V3认证不兼容 | 需火山引擎控制台appid |
+| 无SSML | V1协议不支持SSML标记 | 使用V3协议+自有appid |
+
+### 16.11 逆向工程方法论总结
+
+本次TTS逆向的关键步骤：
+
+1. **浏览器流量分析**：使用Playwright + CDP拦截WebSocket帧和HTTP请求
+2. **JS代码分析**：提取并搜索压缩后的SAMI SDK代码，找到TTS客户端类
+3. **公开文档对照**：火山引擎官方文档提供了V3协议完整规范
+4. **协议版本切换**：V3认证失败后，尝试V1旧版协议成功
+5. **二进制帧调试**：逐字节分析WebSocket帧，发现sequence number字段
+6. **音色兼容性测试**：批量测试15个音色，确认豆包appid的限制
+
+**核心教训**：当新版协议认证不兼容时，旧版协议往往是更简单的突破口。

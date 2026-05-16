@@ -772,6 +772,14 @@ tr:hover td{background:rgba(108,92,231,.05)}
         <button class="btn btn-primary" onclick="startPodcast()" id="podcastGenBtn">生成</button>
       </div>
       <div class="podcast-file-name" id="podcastFileName"></div>
+      <div style="display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--dim);align-items:center">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="podcastIntroJingle" checked> 🎵 前置音乐
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="podcastOutroJingle" checked> 🎶 后置音乐
+        </label>
+      </div>
     </div>
     <div class="card">
       <div class="card-title">📋 播客任务</div>
@@ -1743,7 +1751,12 @@ async function startPodcast() {
     const res = await fetch(getApiUrl('/v1/podcast/generate'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: topic || '根据上传的文件生成播客', file_info: fileInfo })
+      body: JSON.stringify({
+        topic: topic || '根据上传的文件生成播客',
+        file_info: fileInfo,
+        intro_jingle: $('#podcastIntroJingle').checked,
+        outro_jingle: $('#podcastOutroJingle').checked
+      })
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -1841,9 +1854,36 @@ async function playPodcast(taskId) {
     $('#podcastPlayerDuration').textContent = `时长: ${dur}`;
 
     const audio = $('#podcastAudio');
-    const proxyUrl = getApiUrl('/api/proxy/audio') + '?url=' + encodeURIComponent(data.audio_url);
-    audio.src = proxyUrl;
+    let audioSrc = '';
+    if (data.audio_url) {
+      if (data.audio_url.startsWith('/v1/podcast/file/')) {
+        audioSrc = getApiUrl(data.audio_url);
+      } else if (data.audio_url.startsWith('http')) {
+        audioSrc = getApiUrl('/api/proxy/audio') + '?url=' + encodeURIComponent(data.audio_url);
+      } else {
+        audioSrc = getApiUrl('/api/proxy/audio') + '?url=' + encodeURIComponent(data.audio_url);
+      }
+    }
+    audio.src = audioSrc;
     audio.style.display = '';
+
+    let dlBtn = document.getElementById('podcastDownloadBtn');
+    if (!dlBtn) {
+      dlBtn = document.createElement('a');
+      dlBtn.id = 'podcastDownloadBtn';
+      dlBtn.className = 'btn btn-primary';
+      dlBtn.style.cssText = 'margin-top:8px;display:inline-block;font-size:13px;text-decoration:none';
+      dlBtn.download = '';
+      playerCard.querySelector('.podcast-player').appendChild(dlBtn);
+    }
+    if (audioSrc) {
+      dlBtn.href = audioSrc;
+      dlBtn.textContent = '⬇️ 下载音频';
+      dlBtn.style.display = '';
+    } else {
+      dlBtn.style.display = 'none';
+    }
+
     audio.play().catch(() => {});
   } catch (e) {
     toast(`播放失败: ${e.message}`, 'error');

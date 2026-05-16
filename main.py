@@ -19,7 +19,7 @@ from config import (
 from models import ChatCompletionRequest, AnthropicMessageRequest, MODEL_CONFIG
 from openai_api import stream_chat_completion, non_stream_chat_completion, generate_images, delete_conversation
 from anthropic_api import stream_anthropic_messages, non_stream_anthropic_messages
-from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts
+from podcast import start_podcast_generation, get_podcast_status, get_podcast_audio, get_podcast_script, list_podcasts, AUDIO_DIR
 from music import start_music_generation, get_music_status, get_music_audio, get_music_lyric, list_music, get_music_styles
 from exporter import fetch_user_info, fetch_conversation_list, export_conversation_full
 from storage import init_db, save_conversation, list_conversations as db_list_conversations, get_conversation as db_get_conversation, save_message, get_messages as db_get_messages, delete_conversation as db_delete_conversation, search_conversations
@@ -421,9 +421,14 @@ async def podcast_generate(request: Request):
         topic = body.get("topic", "")
         conversation_id = body.get("conversation_id", "0")
         file_info = body.get("file_info")
+        intro_jingle = body.get("intro_jingle", True)
+        outro_jingle = body.get("outro_jingle", True)
         if not topic and not file_info:
             raise HTTPException(status_code=400, detail="'topic' or 'file_info' is required")
-        result = await start_podcast_generation(topic, conversation_id, file_info)
+        result = await start_podcast_generation(
+            topic, conversation_id, file_info,
+            intro_jingle=intro_jingle, outro_jingle=outro_jingle
+        )
         return JSONResponse(content=result)
     except HTTPException:
         raise
@@ -478,6 +483,22 @@ async def podcast_script(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return JSONResponse(content=result)
 
+@app.get("/v1/podcast/file/{filename}")
+async def podcast_file(filename: str):
+    file_path = os.path.join(AUDIO_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    from pathlib import Path
+    content_type = "audio/mpeg" if filename.endswith(".mp3") else "audio/wav"
+    return Response(
+        content=open(file_path, "rb").read(),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"inline; filename=\"{filename}\"",
+            "Accept-Ranges": "bytes",
+        }
+    )
+
 @app.post("/v1/music/generate")
 async def music_generate(request: Request):
     body = await request.json()
@@ -491,6 +512,20 @@ async def music_generate(request: Request):
         raise HTTPException(status_code=400, detail="prompt or lyric is required")
     result = await start_music_generation(prompt, conversation_id, style=style, mood=mood, voice=voice, lyric=lyric)
     return JSONResponse(content=result)
+
+@app.get("/v1/podcast/config")
+async def podcast_config_get():
+    from podcast import PODCAST_CONFIG
+    return JSONResponse(content=PODCAST_CONFIG)
+
+@app.post("/v1/podcast/config")
+async def podcast_config_set(request: Request):
+    from podcast import PODCAST_CONFIG
+    body = await request.json()
+    for key in ("intro_jingle", "outro_jingle"):
+        if key in body:
+            PODCAST_CONFIG[key] = bool(body[key])
+    return JSONResponse(content=PODCAST_CONFIG)
 
 @app.get("/v1/music/status/{task_id}")
 async def music_status(task_id: str):

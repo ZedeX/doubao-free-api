@@ -9,7 +9,7 @@
 - 🖼️ **Vision 图片识别** — 支持 OpenAI Vision 格式，自动上传图片到豆包 ImageX
 - 🎨 **图片生成** — 支持 `/v1/images/generations`，兼容 OpenAI Image API
 - 🎵 **音乐生成** — 支持 AI 音乐创作，自动生成歌词+音频，Web端直接播放
-- 🎙️ **播客生成** — 支持 AI 播客脚本+音频生成，自动账号重试
+- 🎙️ **播客生成** — 支持 AI 播客脚本+音频生成，火山引擎原生TTS，前置/后置音乐
 - 🧠 **思考模式** — 深度推理，边想边搜
 - 💻 **编程模式** — 基于 Doubao-Seed-Code 的代码生成
 - ✍️ **写作/翻译/解题** — 7种特殊模式，参数切换
@@ -27,7 +27,7 @@
 ### 1. 安装依赖
 
 ```bash
-pip install aiohttp fastapi uvicorn httpx pycryptodome requests-aws4auth python-multipart cloakbrowser
+pip install aiohttp fastapi uvicorn httpx pycryptodome requests-aws4auth python-multipart cloakbrowser websockets edge-tts
 ```
 
 ### 2. 提取 Cookie
@@ -272,6 +272,7 @@ with client.messages.stream(
 | `/v1/podcast/audio/{task_id}` | GET | 获取播客音频URL |
 | `/v1/podcast/script/{task_id}` | GET | 获取播客脚本 |
 | `/v1/podcast/list` | GET | 播客任务列表 |
+| `/v1/podcast/config` | GET/POST | 播客配置（前置/后置音乐开关） |
 | `/v1/user/info` | GET | 获取当前豆包用户信息 |
 | `/v1/doubao/conversations` | GET | 获取豆包网站对话列表 |
 | `/v1/doubao/conversations/{id}/export` | GET | 导出指定对话（含媒体下载） |
@@ -337,7 +338,63 @@ print(response.data[0].url)
 - 📤 **导出/导入** — 豆包网站对话抓取、本地对话导出导入
 - 🌓 **主题切换** — 白天/暗黑模式，自动记忆
 
-## 音乐生成
+## 播客生成
+
+通过 `doubao-podcast` 模型生成 AI 播客，支持脚本生成 + 原生TTS音频合成：
+
+```bash
+# 生成播客
+curl -X POST http://localhost:8765/v1/podcast/generate \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "人工智能的未来发展"}'
+
+# 查询状态
+curl http://localhost:8765/v1/podcast/status/{task_id}
+
+# 获取音频
+curl http://localhost:8765/v1/podcast/audio/{task_id}
+```
+
+### TTS 音频合成
+
+播客音频使用**火山引擎原生TTS**（豆包同款音色）：
+
+| 项目 | 详情 |
+|------|------|
+| 协议 | 火山引擎 V1 WebSocket 二进制协议 |
+| 端点 | `wss://openspeech.bytedance.com/api/v1/tts/ws_binary` |
+| 认证 | 通过豆包 `/alice/user/launch` API 获取 appid + token |
+| 音色 | `zh_female_wenroutaozi_uranus_bigtts`（温柔桃子女声） |
+| 格式 | MP3, 24kHz 采样率 |
+
+**工作流程**：
+1. 调用豆包 FPA API 生成播客脚本（双人对话格式）
+2. 解析脚本，按主播分段
+3. 通过火山引擎 WebSocket TTS 合成每段音频
+4. 合并所有音频段，返回完整播客
+
+**自动重试机制**：
+- Cookie 过期时自动切换账号池中的其他账号
+- 火山引擎 TTS 失败时自动回退到 edge-tts
+
+**前置/后置音乐**：
+- 播客音频自动添加前置音乐（intro_jingle.mp3）和后置音乐（outro_jingle.mp3）
+- 使用 ffmpeg 合并音频，带渐入渐出效果
+- 可通过前端复选框或 API 参数控制开关：
+  - 生成时传参：`{"topic": "...", "intro_jingle": true, "outro_jingle": true}`
+  - 配置端点：`GET/POST /v1/podcast/config`
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/v1/podcast/generate` | POST | 生成播客（自动账号重试） |
+| `/v1/podcast/status/{task_id}` | GET | 播客生成状态查询 |
+| `/v1/podcast/audio/{task_id}` | GET | 获取播客音频URL |
+| `/v1/podcast/script/{task_id}` | GET | 获取播客脚本 |
+| `/v1/podcast/list` | GET | 播客任务列表 |
+| `/v1/podcast/file/{filename}` | GET | 音频文件下载 |
+| `/v1/podcast/config` | GET/POST | 播客配置（前置/后置音乐开关） |
 
 通过 `doubao-music` 模型生成 AI 音乐，支持歌词+音频自动生成：
 
@@ -451,31 +508,40 @@ Web 管理面板支持：
 
 ```
 doubao-api/
-├── main.py              # FastAPI 入口 + 路由
-├── config.py            # 配置加载 + Cookie池 + 日志
-├── models.py            # 数据模型 + 模型配置
-├── sse.py               # SSE 解析 + 格式化工具
-├── openai_api.py        # OpenAI 兼容 API 逻辑
-├── anthropic_api.py     # Anthropic 兼容 API 逻辑
-├── music.py             # 音乐生成模块（歌词+音频+WebSocket）
-├── podcast.py           # 播客生成模块（脚本+音频+自动重试）
-├── storage.py           # 服务端持久存储（SQLite）
-├── exporter.py          # 对话导出模块（CloakBrowser+媒体下载）
-├── uploader.py          # 图片上传模块 (ImageX 4步流程)
-├── signer.py            # Playwright 签名模块 (B2, 实验性)
-├── config.json          # 会话配置 (自动生成)
-├── accounts.json        # 多账号配置
-├── config.example.json  # 配置示例
-├── index.html           # 管理面板（明暗主题+齿轮设置图标）
-├── docs/                # 文档
+├── main.py                      # FastAPI 入口 + 路由
+├── config.py                    # 配置加载 + Cookie池 + 日志
+├── models.py                    # 数据模型 + 模型配置
+├── sse.py                       # SSE 解析 + 格式化工具
+├── openai_api.py                # OpenAI 兼容 API 逻辑
+├── anthropic_api.py             # Anthropic 兼容 API 逻辑
+├── music.py                     # 音乐生成模块（歌词+音频+WebSocket）
+├── podcast.py                   # 播客生成模块（脚本+音频+自动重试+前置/后置音乐）
+├── volcengine_tts.py            # 火山引擎 TTS 客户端（WebSocket V1 协议）
+├── storage.py                   # 服务端持久存储（SQLite）
+├── exporter.py                  # 对话导出模块（CloakBrowser+媒体下载）
+├── uploader.py                  # 图片上传模块 (ImageX 4步流程)
+├── signer.py                    # Playwright 签名模块 (B2, 实验性)
+├── generate_podcast_jingle.py   # 播客前置/后置音乐生成脚本
+├── config.json                  # 会话配置 (自动生成)
+├── accounts.json                # 多账号配置
+├── config.example.json          # 配置示例
+├── index.html                   # 管理面板（明暗主题+播客播放器+音乐播放器）
+├── run-server.bat               # Windows 启动脚本
+├── .gitignore                   # Git 忽略规则
+├── README.md                    # 项目文档
+├── docs/
 │   └── reverse-engineering-report.md  # 逆向分析报告
-├── data/                # 数据目录 (自动生成)
-│   └── conversations.db # SQLite 对话数据库
-├── exports/             # 对话导出 (自动生成)
-│   └── media/           # 下载的媒体文件
-├── logs/                # 对话日志 (自动生成)
-└── temp/                # 临时文件
-    └── extract_session.py  # Cookie 提取脚本
+├── data/                        # 数据目录 (自动生成)
+│   ├── conversations.db         # SQLite 对话数据库
+│   └── podcast_audio/           # 播客音频文件
+│       ├── intro_jingle.mp3     # 前置音乐
+│       └── outro_jingle.mp3     # 后置音乐
+├── exports/                     # 对话导出 (自动生成)
+│   └── media/                   # 下载的媒体文件
+├── logs/                        # 对话日志 (自动生成)
+├── media/                       # 音乐/音频缓存 (自动生成)
+│   └── audio/                   # 生成的音频文件
+└── temp/                        # 临时文件 (自动生成)
 ```
 
 ## 技术原理
